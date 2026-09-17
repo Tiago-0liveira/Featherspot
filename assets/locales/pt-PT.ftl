@@ -1,0 +1,35 @@
+# Mellowdeck Portuguese (Portugal)
+app-name = Mellowdeck
+app-foundation-ready = A base do Mellowdeck está pronta.
+nav-home = Início
+nav-search = Pesquisar
+nav-liked-songs = Músicas de que gostaste
+nav-albums = Álbuns
+nav-artists = Artistas
+nav-settings = Definições
+nav-create-playlist = Criar playlist
+settings-title = Definições
+settings-account = Conta
+settings-playback = Reprodução
+settings-appearance = Aspeto
+settings-language = Idioma
+settings-performance = Desempenho
+settings-cache = Cache
+settings-diagnostics = Diagnóstico
+settings-about = Acerca de
+onboarding-premium-required = É necessário Spotify Premium para reproduzir neste dispositivo.
+onboarding-client-id = ID de cliente do Spotify
+onboarding-login = Iniciar sessão com o Spotify
+playback-local-device = Este dispositivo
+playback-connect-device = Dispositivo Spotify Connect
+playback-unavailable = A reprodução não está disponível no modo offline.
+queue-title = Fila
+queue-limitations = O Spotify permite adicionar à fila, mas não permite que as aplicações removam ou reordenem músicas na fila.
+playlist-remove-library = Remover da tua biblioteca
+status-offline = Offline — a mostrar conteúdo em cache
+action-play = Reproduzir
+action-pause = Pausa
+action-next = Seguinte
+action-previous = Anterior
+action-close = Fechar
+

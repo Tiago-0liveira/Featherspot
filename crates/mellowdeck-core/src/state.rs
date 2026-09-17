@@ -1,0 +1,339 @@
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Device, DeviceId, ErrorKind, PlaylistId, RepeatMode, Track, UserId};
+
+pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AppState {
+    pub session: SessionState,
+    pub navigation: NavigationState,
+    pub home: HomeState,
+    pub library: LibraryState,
+    pub search: SearchState,
+    pub playlist_editor: PlaylistEditorState,
+    pub playback: PlaybackState,
+    pub connectivity: ConnectivityState,
+    pub settings: SettingsState,
+    pub notifications: NotificationState,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum SessionState {
+    #[default]
+    SignedOut,
+    Authorizing,
+    SignedIn {
+        user_id: UserId,
+        display_name: String,
+        premium: bool,
+    },
+    ReauthorizationRequired,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NavigationState {
+    pub current: Route,
+    pub back: Vec<Route>,
+    pub forward: Vec<Route>,
+}
+
+impl Default for NavigationState {
+    fn default() -> Self {
+        Self { current: Route::Onboarding, back: Vec::new(), forward: Vec::new() }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Route {
+    Onboarding,
+    Home,
+    Search,
+    LikedSongs,
+    Albums,
+    Artists,
+    Playlist(PlaylistId),
+    Settings,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HomeState {
+    pub loading: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LibraryState {
+    pub loading: bool,
+    pub liked_track_count: u32,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SearchState {
+    pub query: String,
+    pub request_generation: u64,
+    pub loading: bool,
+    pub recent_queries: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlaylistEditorState {
+    pub playlist_id: Option<PlaylistId>,
+    pub pending_mutations: usize,
+    pub conflict: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlaybackState {
+    pub target: Option<PlaybackTargetState>,
+    pub item: Option<Track>,
+    pub playing: bool,
+    pub authoritative_position: Duration,
+    pub observed_at: Option<Instant>,
+    pub duration: Duration,
+    pub volume_percent: u8,
+    pub shuffle: bool,
+    pub repeat: RepeatMode,
+    pub restrictions: Vec<String>,
+    pub devices: Vec<Device>,
+}
+
+impl PlaybackState {
+    pub fn interpolated_position(&self, now: Instant) -> Duration {
+        let elapsed = if self.playing {
+            self.observed_at
+                .map_or(Duration::ZERO, |observed| now.saturating_duration_since(observed))
+        } else {
+            Duration::ZERO
+        };
+        self.authoritative_position.saturating_add(elapsed).min(self.duration)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlaybackTargetState {
+    LocalEmbedded { healthy: bool },
+    SpotifyConnect(DeviceId),
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ConnectivityState {
+    #[default]
+    Online,
+    Offline,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    #[default]
+    System,
+    PastelLight,
+    InkDark,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalePreference {
+    #[default]
+    System,
+    EnUs,
+    PtPt,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameRateLimit {
+    #[default]
+    Adaptive,
+    Fps30,
+    Fps60,
+    Fps120,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct SettingsState {
+    pub schema_version: u32,
+    pub theme: ThemePreference,
+    pub locale: LocalePreference,
+    pub frame_rate: FrameRateLimit,
+    pub cache_limit_mb: u32,
+    pub client_id: Option<String>,
+}
+
+impl Default for SettingsState {
+    fn default() -> Self {
+        Self {
+            schema_version: SETTINGS_SCHEMA_VERSION,
+            theme: ThemePreference::System,
+            locale: LocalePreference::System,
+            frame_rate: FrameRateLimit::Adaptive,
+            cache_limit_mb: 500,
+            client_id: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NotificationState {
+    pub next_id: u64,
+    pub items: Vec<Notification>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Notification {
+    pub id: u64,
+    pub message: String,
+    pub kind: NotificationKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NotificationKind {
+    Info,
+    Success,
+    Warning,
+    Error(ErrorKind),
+}
+
+#[derive(Debug)]
+pub enum Action {
+    Navigate(Route),
+    NavigateBack,
+    NavigateForward,
+    SearchChanged(String),
+    SearchStarted { generation: u64 },
+    SearchFinished { generation: u64 },
+    ConnectivityChanged(ConnectivityState),
+    PlaybackObserved { position: Duration, duration: Duration, playing: bool, at: Instant },
+    VolumeChanged(u8),
+    Notify { message: String, kind: NotificationKind },
+    DismissNotification(u64),
+    LoggedOut,
+}
+
+impl AppState {
+    pub fn reduce(&mut self, action: Action) {
+        match action {
+            Action::Navigate(route) if route != self.navigation.current => {
+                self.navigation.back.push(self.navigation.current.clone());
+                self.navigation.current = route;
+                self.navigation.forward.clear();
+            }
+            Action::NavigateBack => {
+                if let Some(route) = self.navigation.back.pop() {
+                    self.navigation.forward.push(self.navigation.current.clone());
+                    self.navigation.current = route;
+                }
+            }
+            Action::NavigateForward => {
+                if let Some(route) = self.navigation.forward.pop() {
+                    self.navigation.back.push(self.navigation.current.clone());
+                    self.navigation.current = route;
+                }
+            }
+            Action::SearchChanged(query) => {
+                self.search.query = query;
+                self.search.request_generation = self.search.request_generation.saturating_add(1);
+            }
+            Action::SearchStarted { generation }
+                if generation == self.search.request_generation =>
+            {
+                self.search.loading = true;
+            }
+            Action::SearchFinished { generation }
+                if generation == self.search.request_generation =>
+            {
+                self.search.loading = false;
+                let query = self.search.query.trim();
+                if !query.is_empty()
+                    && self.search.recent_queries.first().map(String::as_str) != Some(query)
+                {
+                    self.search.recent_queries.insert(0, query.to_owned());
+                    self.search.recent_queries.truncate(10);
+                }
+            }
+            Action::Navigate(_) | Action::SearchStarted { .. } | Action::SearchFinished { .. } => {}
+            Action::ConnectivityChanged(connectivity) => self.connectivity = connectivity,
+            Action::PlaybackObserved { position, duration, playing, at } => {
+                self.playback.authoritative_position = position.min(duration);
+                self.playback.duration = duration;
+                self.playback.playing = playing;
+                self.playback.observed_at = Some(at);
+            }
+            Action::VolumeChanged(volume) => self.playback.volume_percent = volume.min(100),
+            Action::Notify { message, kind } => {
+                let id = self.notifications.next_id;
+                self.notifications.next_id = id.saturating_add(1);
+                self.notifications.items.push(Notification { id, message, kind });
+            }
+            Action::DismissNotification(id) => {
+                self.notifications.items.retain(|notification| notification.id != id);
+            }
+            Action::LoggedOut => {
+                let settings = self.settings.clone();
+                *self = Self::default();
+                self.settings = settings;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation_history_is_reversible() {
+        let mut state = AppState::default();
+        state.reduce(Action::Navigate(Route::Home));
+        state.reduce(Action::Navigate(Route::Search));
+        state.reduce(Action::NavigateBack);
+        assert_eq!(state.navigation.current, Route::Home);
+        state.reduce(Action::NavigateForward);
+        assert_eq!(state.navigation.current, Route::Search);
+    }
+
+    #[test]
+    fn obsolete_search_completion_is_ignored() {
+        let mut state = AppState::default();
+        state.reduce(Action::SearchChanged("first".into()));
+        let old = state.search.request_generation;
+        state.reduce(Action::SearchChanged("second".into()));
+        state.reduce(Action::SearchStarted { generation: state.search.request_generation });
+        state.reduce(Action::SearchFinished { generation: old });
+        assert!(state.search.loading);
+    }
+
+    #[test]
+    fn playback_progress_interpolates_and_clamps() {
+        let observed = Instant::now();
+        let mut state = PlaybackState {
+            authoritative_position: Duration::from_secs(9),
+            duration: Duration::from_secs(10),
+            playing: true,
+            observed_at: Some(observed),
+            ..PlaybackState::default()
+        };
+        assert_eq!(
+            state.interpolated_position(observed + Duration::from_secs(2)),
+            Duration::from_secs(10)
+        );
+        state.playing = false;
+        assert_eq!(
+            state.interpolated_position(observed + Duration::from_secs(2)),
+            Duration::from_secs(9)
+        );
+    }
+
+    #[test]
+    fn logout_preserves_local_settings_only() {
+        let mut state = AppState::default();
+        state.settings.theme = ThemePreference::InkDark;
+        state.navigation.current = Route::Home;
+        state.reduce(Action::LoggedOut);
+        assert_eq!(state.settings.theme, ThemePreference::InkDark);
+        assert_eq!(state.navigation.current, Route::Onboarding);
+    }
+}

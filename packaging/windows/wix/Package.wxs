@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Mellowdeck" Manufacturer="Mellowdeck contributors" Version="0.1.0"
+           UpgradeCode="71E46D0A-B4E9-4C2A-8D88-7A183A9F4D38" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Mellowdeck is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Mellowdeck">
+        <Component Id="MellowdeckExecutable" Guid="0BC93F70-D7C2-45C4-8134-7F997E1B324F">
+          <File Id="MellowdeckExe" Source="$(var.SourceDir)\mellowdeck.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="MellowdeckPlayerHost" Guid="5A91B896-A563-45FE-9B0D-77F682CC2EE0">
+          <File Id="MellowdeckPlayerHostExe" Source="$(var.SourceDir)\mellowdeck-player-host.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="MainFeature" Title="Mellowdeck" Level="1">
+      <ComponentRef Id="MellowdeckExecutable" />
+      <ComponentRef Id="MellowdeckPlayerHost" />
+    </Feature>
+  </Package>
+</Wix>

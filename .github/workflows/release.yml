@@ -1,0 +1,50 @@
+name: Release artifacts
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-pc-windows-msvc
+      - name: Build release executable
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
+      - name: Install packaging tools
+        run: |
+          dotnet tool install --global wix
+          cargo install cargo-cyclonedx --locked
+      - name: Create portable ZIP and SBOM
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/portable | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/mellowdeck.exe dist/portable/
+          Copy-Item packaging/windows/portable/README.txt dist/portable/
+          Compress-Archive -Path dist/portable/* -DestinationPath dist/Mellowdeck-${{ github.ref_name }}-windows-x64-portable-unsigned.zip
+          cargo cyclonedx --format json --override-filename Mellowdeck-${{ github.ref_name }}.cdx
+          Move-Item Mellowdeck-${{ github.ref_name }}.cdx.json dist/
+      - name: Create unsigned MSI
+        shell: pwsh
+        run: |
+          wix build packaging/windows/wix/Package.wxs -arch x64 -d SourceDir=target/x86_64-pc-windows-msvc/release -o dist/Mellowdeck-${{ github.ref_name }}-windows-x64-unsigned.msi
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name } | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mellowdeck-${{ github.ref_name }}-windows-x64-unsigned
+          path: dist/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          body: "Unsigned development artifacts. Spotify authorization and the Milestone 0 playback feasibility gate remain required."
+          files: dist/*

@@ -1,0 +1,35 @@
+# Mellowdeck English (United States)
+app-name = Mellowdeck
+app-foundation-ready = Mellowdeck foundation is ready.
+nav-home = Home
+nav-search = Search
+nav-liked-songs = Liked Songs
+nav-albums = Albums
+nav-artists = Artists
+nav-settings = Settings
+nav-create-playlist = Create playlist
+settings-title = Settings
+settings-account = Account
+settings-playback = Playback
+settings-appearance = Appearance
+settings-language = Language
+settings-performance = Performance
+settings-cache = Cache
+settings-diagnostics = Diagnostics
+settings-about = About
+onboarding-premium-required = Spotify Premium is required for playback on this device.
+onboarding-client-id = Spotify Client ID
+onboarding-login = Log in with Spotify
+playback-local-device = This device
+playback-connect-device = Spotify Connect device
+playback-unavailable = Playback is unavailable while offline.
+queue-title = Queue
+queue-limitations = Spotify permits adding to the queue, but does not permit apps to remove or reorder queued tracks.
+playlist-remove-library = Remove from Your Library
+status-offline = Offline — showing cached content
+action-play = Play
+action-pause = Pause
+action-next = Next
+action-previous = Previous
+action-close = Close
+

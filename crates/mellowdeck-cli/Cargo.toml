@@ -1,0 +1,21 @@
+[package]
+name = "mellowdeck-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mellowdeck-cli"
+path = "src/main.rs"
+
+[dependencies]
+crossterm.workspace = true
+mellowdeck-core = { path = "../mellowdeck-core" }
+mellowdeck-platform = { path = "../mellowdeck-platform" }
+mellowdeck-spotify = { path = "../mellowdeck-spotify" }
+mellowdeck-storage = { path = "../mellowdeck-storage" }
+ratatui.workspace = true
+
+[lints]
+workspace = true
