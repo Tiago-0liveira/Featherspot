@@ -16,6 +16,9 @@ mellowdeck-platform = { path = "../mellowdeck-platform" }
 mellowdeck-spotify = { path = "../mellowdeck-spotify" }
 mellowdeck-storage = { path = "../mellowdeck-storage" }
 ratatui.workspace = true
+ratatui-image.workspace = true
+image.workspace = true
+reqwest.workspace = true
 
 [lints]
 workspace = true

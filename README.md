@@ -81,8 +81,21 @@ cargo run -p mellowdeck
 The terminal client is also available while the workspace is under development:
 
 ```powershell
+cargo build -p mellowdeck-player-host
 cargo run -p mellowdeck-cli
 ```
+
+The CLI launches `mellowdeck-player-host.exe` from the same Cargo output directory. Build the
+host once before running the CLI, and rebuild it after changing the player-host crate.
+
+The terminal client adapts from 80 columns upward. Wide terminals show Navigation, Browse, and
+Queue together; medium terminals open Queue as a page; compact terminals use the `☰ Menu` overlay.
+Use `Tab`/`Shift+Tab` to move focus, arrows or `j`/`k` to move within a pane, `Enter` to open or
+play, `/` to search, `a` to append a track to the queue, and `?` for searchable contextual help.
+Seeking uses `Shift+Left`/`Shift+Right`. Mouse clicks, double-clicks, right-click actions, wheel
+scrolling, and player controls are enabled by default. CLI artwork (`Auto`, `Blocks`, or `Off`),
+mouse input, and the wide-screen queue can be changed on the Settings page and are stored with the
+existing local settings.
 
 ## Development checks
 

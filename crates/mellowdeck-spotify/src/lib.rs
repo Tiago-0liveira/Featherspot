@@ -8,8 +8,10 @@ mod policy;
 
 pub use callback::CallbackServer;
 pub use home::{
-    SpotifyArtistDetail, SpotifyDevice, SpotifyDisplayItem, SpotifyHome, SpotifyLibrary,
-    SpotifyPlayback, SpotifyQueue, SpotifySearchItem, SpotifySection, SpotifyWebApi,
+    SpotifyArtistDetail, SpotifyBrowseItem, SpotifyContentState, SpotifyDetailKind,
+    SpotifyDetailPage, SpotifyDevice, SpotifyDisplayItem, SpotifyEntityKind, SpotifyHome,
+    SpotifyLibrary, SpotifyPage, SpotifyPlayback, SpotifyQueue, SpotifySearchItem, SpotifySection,
+    SpotifyTypedQueue, SpotifyWebApi,
 };
 pub use oauth::{
     AUTHORIZE_URL, CALLBACK_HOST, CALLBACK_PORT, CALLBACK_URL, OAuthAttempt, REQUIRED_SCOPES,

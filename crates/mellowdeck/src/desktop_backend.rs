@@ -1,6 +1,8 @@
 use std::{env, fmt, path::PathBuf, sync::Mutex, thread, time::Duration};
 
-use mellowdeck_core::{AppError, CredentialStore, ErrorKind, Result, SettingsState, ThemePreference};
+use mellowdeck_core::{
+    AppError, CredentialStore, ErrorKind, Result, SettingsState, ThemePreference,
+};
 use mellowdeck_platform::{AppPaths, WindowsCredentialStore, open_system_browser};
 use mellowdeck_spotify::{
     SpotifyArtistDetail, SpotifyAuthenticator, SpotifyDevice, SpotifyDisplayItem, SpotifyHome,

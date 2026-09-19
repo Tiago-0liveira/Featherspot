@@ -145,9 +145,15 @@ pub struct ArtistDetail {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlaybackCommand {
     PlayUri(String),
-    PlayUriOnDevice { uri: String, device_id: String },
+    PlayUriOnDevice {
+        uri: String,
+        device_id: String,
+    },
     /// Plays an album/artist/playlist context, optionally shuffled.
-    PlayContext { uri: String, shuffle: bool },
+    PlayContext {
+        uri: String,
+        shuffle: bool,
+    },
     Resume,
     Pause,
     Previous,

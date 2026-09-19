@@ -5,10 +5,10 @@ use std::{
 
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, Application, Bounds, Context, Div,
-    FocusHandle,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Render, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window, WindowBounds,
-    WindowOptions, canvas, deferred, div, img, prelude::*, px, relative, rgb, size,
+    FocusHandle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString, Stateful,
+    Window, WindowBounds, WindowOptions, canvas, deferred, div, img, prelude::*, px, relative, rgb,
+    size,
 };
 use mellowdeck_core::{
     Action, AppState, LocalPlayerCommand, LocalPlayerEvent, Route, SessionState, SpotifyUri,
@@ -697,9 +697,8 @@ impl MellowdeckShell {
 
         if self.local_player_is_active() {
             if let Some(player) = &self.local_player {
-                let _ = player.send(&LocalPlayerCommand::Volume {
-                    value_milli: u16::from(percent) * 10,
-                });
+                let _ = player
+                    .send(&LocalPlayerCommand::Volume { value_milli: u16::from(percent) * 10 });
             }
         } else {
             self.volume_send_token = self.volume_send_token.wrapping_add(1);
@@ -836,12 +835,7 @@ impl MellowdeckShell {
     #[allow(clippy::cast_precision_loss)]
     fn waveform_fraction_at(&self, x: Pixels) -> Option<f32> {
         let bounds = self.waveform_bounds?;
-        let width = f32::from(bounds.size.width);
-        if width <= 0.0 {
-            return None;
-        }
-        let offset = f32::from(x - bounds.origin.x);
-        Some((offset / width).clamp(0.0, 1.0))
+        seek_ratio(f32::from(x), f32::from(bounds.origin.x), f32::from(bounds.size.width))
     }
 
     #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -1299,7 +1293,10 @@ impl MellowdeckShell {
                     .into_any_element()
             },
             |url| {
-                img(url.to_owned()).size_full().object_fit(gpui::ObjectFit::Cover).into_any_element()
+                img(url.to_owned())
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .into_any_element()
             },
         );
         // The glyph is unique per home section, so it keeps two cards distinct even when their top
@@ -1349,7 +1346,9 @@ impl MellowdeckShell {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(name.to_owned()),
                     )
-                    .child(div().text_xs().text_color(rgb(self.pal.muted)).child(listeners.to_owned())),
+                    .child(
+                        div().text_xs().text_color(rgb(self.pal.muted)).child(listeners.to_owned()),
+                    ),
             )
             .child(div().ml_auto().text_color(rgb(self.pal.muted)).child("›"))
             .into_any_element()
@@ -1370,7 +1369,10 @@ impl MellowdeckShell {
         let artwork = artwork_url.map_or_else(
             || div().size_full().bg(rgb(color)).into_any_element(),
             |url| {
-                img(url.to_owned()).size_full().object_fit(gpui::ObjectFit::Cover).into_any_element()
+                img(url.to_owned())
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .into_any_element()
             },
         );
         // Key the row by its URI (unique) rather than its title, which can repeat across sections
@@ -1403,7 +1405,9 @@ impl MellowdeckShell {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(title.to_owned()),
                     )
-                    .child(div().text_xs().text_color(rgb(self.pal.muted)).child(subtitle.to_owned())),
+                    .child(
+                        div().text_xs().text_color(rgb(self.pal.muted)).child(subtitle.to_owned()),
+                    ),
             )
             .child(div().ml_auto().text_color(rgb(self.pal.muted)).child("▶"))
             .into_any_element()
@@ -1603,7 +1607,12 @@ impl MellowdeckShell {
         let pal = self.pal;
         let portrait_image = detail.artwork_url.as_deref().map_or_else(
             || div().size_full().bg(rgb(LAVENDER)).into_any_element(),
-            |url| img(url.to_owned()).size_full().object_fit(gpui::ObjectFit::Cover).into_any_element(),
+            |url| {
+                img(url.to_owned())
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .into_any_element()
+            },
         );
         // Albums show a rounded square cover; artists a circular portrait.
         let portrait = div()
@@ -1669,15 +1678,8 @@ impl MellowdeckShell {
             .child("🔀")
             .child("Shuffle");
 
-        let content = div()
-            .relative()
-            .flex()
-            .items_center()
-            .gap_5()
-            .size_full()
-            .p_6()
-            .child(portrait)
-            .child(
+        let content =
+            div().relative().flex().items_center().gap_5().size_full().p_6().child(portrait).child(
                 div()
                     .flex()
                     .flex_col()
@@ -1697,9 +1699,7 @@ impl MellowdeckShell {
                             .child(detail.name.clone()),
                     )
                     .child(div().text_sm().text_color(rgb(pal.muted)).child(meta))
-                    .child(
-                        div().flex().gap_3().mt_1().child(play_button).child(shuffle_button),
-                    ),
+                    .child(div().flex().gap_3().mt_1().child(play_button).child(shuffle_button)),
             );
 
         div()
@@ -1765,10 +1765,20 @@ impl MellowdeckShell {
                         )
                     })
                     .collect::<Vec<_>>();
-                (self.detail_header(detail, cx), detail.warning.clone(), detail.is_album, songs, albums)
+                (
+                    self.detail_header(detail, cx),
+                    detail.warning.clone(),
+                    detail.is_album,
+                    songs,
+                    albums,
+                )
             }
             LoadStatus::Loading => (
-                div().text_2xl().font_weight(gpui::FontWeight::BOLD).child("Loading…").into_any_element(),
+                div()
+                    .text_2xl()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("Loading…")
+                    .into_any_element(),
                 None,
                 false,
                 Vec::new(),
@@ -1943,7 +1953,11 @@ impl MellowdeckShell {
             .collect::<Vec<_>>();
         let body: AnyElement = if cards.is_empty() {
             let message = section.warning.as_deref().unwrap_or("Nothing saved here yet.");
-            div().text_sm().text_color(rgb(self.pal.muted)).child(message.to_owned()).into_any_element()
+            div()
+                .text_sm()
+                .text_color(rgb(self.pal.muted))
+                .child(message.to_owned())
+                .into_any_element()
         } else {
             // Fixed-width cards that wrap onto as many rows as the width allows.
             let mut grid = div().flex().flex_wrap().gap_4();
@@ -1963,16 +1977,19 @@ impl MellowdeckShell {
 
     /// The Library tab: every saved album and playlist, as artwork grids.
     fn library_overlay(&self, cx: &Context<Self>) -> AnyElement {
-        let page =
-            self.overlay_page("library-scroll", "Your Library", "Every album and playlist you saved on Spotify.");
+        let page = self.overlay_page(
+            "library-scroll",
+            "Your Library",
+            "Every album and playlist you saved on Spotify.",
+        );
         match &self.library {
             LoadStatus::Loaded(library) => page
                 .child(self.library_grid("Albums", &library.albums, cx))
                 .child(self.library_grid("Playlists", &library.playlists, cx))
                 .child(div().h(px(8.0))),
-            LoadStatus::Loading | LoadStatus::Idle => {
-                page.child(div().text_sm().text_color(rgb(self.pal.muted)).child("Loading your library…"))
-            }
+            LoadStatus::Loading | LoadStatus::Idle => page.child(
+                div().text_sm().text_color(rgb(self.pal.muted)).child("Loading your library…"),
+            ),
             LoadStatus::Failed(error) => page.child(
                 div()
                     .flex()
@@ -2031,40 +2048,42 @@ impl MellowdeckShell {
 
     /// The Settings tab. Currently hosts the appearance (theme) switcher.
     fn settings_overlay(&self, cx: &Context<Self>) -> AnyElement {
-        self.overlay_page("settings-scroll", "Settings", "Personalize how Mellowdeck looks and behaves.")
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div().text_xl().font_weight(gpui::FontWeight::BOLD).child("Appearance"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(self.pal.muted))
-                            .child("Choose a light or dark theme for the whole app."),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(self.theme_option(
-                                "theme-light",
-                                "Light",
-                                ThemePreference::PastelLight,
-                                cx,
-                            ))
-                            .child(self.theme_option(
-                                "theme-dark",
-                                "Dark",
-                                ThemePreference::InkDark,
-                                cx,
-                            )),
-                    ),
-            )
-            .into_any_element()
+        self.overlay_page(
+            "settings-scroll",
+            "Settings",
+            "Personalize how Mellowdeck looks and behaves.",
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(div().text_xl().font_weight(gpui::FontWeight::BOLD).child("Appearance"))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(self.pal.muted))
+                        .child("Choose a light or dark theme for the whole app."),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_3()
+                        .child(self.theme_option(
+                            "theme-light",
+                            "Light",
+                            ThemePreference::PastelLight,
+                            cx,
+                        ))
+                        .child(self.theme_option(
+                            "theme-dark",
+                            "Dark",
+                            ThemePreference::InkDark,
+                            cx,
+                        )),
+                ),
+        )
+        .into_any_element()
     }
 
     #[allow(clippy::unused_self)]
@@ -2075,20 +2094,35 @@ impl MellowdeckShell {
         primary: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let directional = !primary;
+        let accessible_label = match command {
+            PlaybackCommand::Previous => "Previous track",
+            PlaybackCommand::Next => "Next track",
+            PlaybackCommand::Pause => "Pause",
+            PlaybackCommand::Resume => "Play",
+            PlaybackCommand::Seek(_) => "Seek",
+            _ => "Playback control",
+        };
         div()
             .id(SharedString::from(format!("playback-control-{label}")))
             .cursor_pointer()
-            .hover(|style| style.opacity(0.72))
+            .tooltip(text_tooltip(accessible_label))
+            .hover(
+                move |style| {
+                    if directional { style.bg(rgb(0xB9_2D_3A)) } else { style.opacity(0.72) }
+                },
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.send_playback(command.clone(), cx);
             }))
             .flex()
             .items_center()
             .justify_center()
-            .size(px(if primary { 38.0 } else { 30.0 }))
+            .size(px(if primary { 38.0 } else { 34.0 }))
             .rounded_full()
-            .bg(rgb(if primary { self.pal.ink } else { self.pal.surface }))
-            .text_color(rgb(if primary { self.pal.surface } else { self.pal.muted }))
+            .bg(rgb(if primary { self.pal.ink } else { RED }))
+            .text_color(rgb(self.pal.surface))
+            .active(|style| style.opacity(0.72))
             .child(label)
             .into_any_element()
     }
@@ -2155,11 +2189,7 @@ impl MellowdeckShell {
             PlayerPanel::Devices => {
                 let rows = match &self.devices {
                     LoadStatus::Loaded(devices) if devices.is_empty() => {
-                        vec![self.artist_row(
-                            "No devices found",
-                            "Open Spotify on a device",
-                            PEACH,
-                        )]
+                        vec![self.artist_row("No devices found", "Open Spotify on a device", PEACH)]
                     }
                     LoadStatus::Loaded(devices) => devices
                         .iter()
@@ -2288,17 +2318,35 @@ impl MellowdeckShell {
         }
     }
 
+    /// A fixed-slot cover that always has a neutral visual fallback. The image is layered over
+    /// the placeholder, so a missing URL or a failed asynchronous image load never leaves a
+    /// broken-image artifact in the player.
+    fn player_artwork(&self, artwork_url: Option<&str>) -> AnyElement {
+        let placeholder = div()
+            .absolute()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgb(LAVENDER))
+            .text_2xl()
+            .text_color(rgb(self.pal.muted))
+            .child("♫");
+        let cover = div().relative().size_full().child(placeholder);
+        match artwork_url {
+            Some(url) => cover
+                .child(img(url.to_owned()).size_full().object_fit(ObjectFit::Cover))
+                .into_any_element(),
+            None => cover.into_any_element(),
+        }
+    }
     /// Left card: cover art, the track title, and each artist as a clickable link.
     fn now_playing_card(&self, cx: &Context<Self>) -> AnyElement {
         let playback = self.playback.as_loaded();
-        let title = playback.filter(|item| !item.title.is_empty()).map_or_else(
-            || self.playback_placeholder_title(),
-            |item| item.title.clone(),
-        );
-        let artwork = playback.and_then(|item| item.artwork_url.as_deref()).map_or_else(
-            || div().size_full().bg(rgb(LAVENDER)).into_any_element(),
-            |url| img(url.to_owned()).size_full().into_any_element(),
-        );
+        let title = playback
+            .filter(|item| !item.title.is_empty())
+            .map_or_else(|| self.playback_placeholder_title(), |item| item.title.clone());
+        let artwork = self.player_artwork(playback.and_then(|item| item.artwork_url.as_deref()));
 
         // Render each artist as its own clickable chip; fall back to the joined subtitle.
         let artists = playback.map(|item| item.artists.clone()).unwrap_or_default();
@@ -2310,9 +2358,21 @@ impl MellowdeckShell {
                 },
                 |item| item.subtitle.clone(),
             );
-            div().text_sm().text_color(rgb(self.pal.muted)).child(subtitle).into_any_element()
+            div()
+                .min_w(px(0.0))
+                .truncate()
+                .text_sm()
+                .text_color(rgb(self.pal.muted))
+                .child(subtitle)
+                .into_any_element()
         } else {
-            let mut row = div().flex().flex_wrap().items_center().text_sm().text_color(rgb(self.pal.muted));
+            let mut row = div()
+                .flex()
+                .min_w(px(0.0))
+                .truncate()
+                .items_center()
+                .text_sm()
+                .text_color(rgb(self.pal.muted));
             for (index, (name, uri)) in artists.into_iter().enumerate() {
                 if index > 0 {
                     row = row.child(div().child(", "));
@@ -2338,11 +2398,13 @@ impl MellowdeckShell {
         div()
             .flex()
             .items_center()
-            .gap_3()
+            .gap_4()
             .w(px(300.0))
+            .min_w(px(300.0))
             .child(
                 div()
                     .size(px(56.0))
+                    .flex_none()
                     .rounded_lg()
                     .overflow_hidden()
                     .bg(rgb(LAVENDER))
@@ -2353,6 +2415,8 @@ impl MellowdeckShell {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
                     .gap_1()
                     .overflow_hidden()
                     .child(self.marquee_title(title))
@@ -2361,39 +2425,19 @@ impl MellowdeckShell {
             .into_any_element()
     }
 
-    /// Renders the now-playing title a touch larger, scrolling it back and forth when it is too
-    /// wide to fit the fixed left zone.
-    #[allow(clippy::cast_precision_loss)]
+    /// Renders the now-playing title within the metadata region without allowing it to run
+    /// beneath the fixed artwork.
     fn marquee_title(&self, title: String) -> AnyElement {
-        const WIDTH: f32 = 224.0;
-        let approx_width = title.chars().count() as f32 * 8.6;
-        let text = div()
-            .whitespace_nowrap()
+        div()
+            .w_full()
+            .min_w(px(0.0))
+            .truncate()
             .text_base()
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(rgb(self.pal.ink));
-        if approx_width <= WIDTH {
-            return text.child(title).into_any_element();
-        }
-        // Scroll only as far as the overflow, then reverse, so the title never jumps.
-        let shift = approx_width - WIDTH + 16.0;
-        let millis = (title.chars().count() as u64 * 260).max(5_000);
-        div()
-            .relative()
-            .w(px(WIDTH))
-            .h(px(22.0))
-            .overflow_hidden()
-            .child(text.absolute().top_0().left_0().child(title).with_animation(
-                "title-marquee",
-                Animation::new(Duration::from_millis(millis)).repeat(),
-                move |element, delta| {
-                    let phase = if delta < 0.5 { delta * 2.0 } else { 2.0 - delta * 2.0 };
-                    element.left(px(-shift * phase))
-                },
-            ))
+            .text_color(rgb(self.pal.ink))
+            .child(title)
             .into_any_element()
     }
-
     /// The waveform strip: a track-shaped bar chart that fills to the playhead, pulses while
     /// playing, and seeks on click, drag, and hover.
     #[allow(clippy::cast_precision_loss)]
@@ -2568,12 +2612,7 @@ impl MellowdeckShell {
                     .items_center()
                     .gap_3()
                     .child(self.playback_control("⏮", PlaybackCommand::Previous, false, cx))
-                    .child(self.playback_control(
-                        if playing { "⏸" } else { "▶" },
-                        toggle,
-                        true,
-                        cx,
-                    ))
+                    .child(self.playback_control(if playing { "⏸" } else { "▶" }, toggle, true, cx))
                     .child(self.playback_control("⏭", PlaybackCommand::Next, false, cx)),
             )
             // Waveform and times take the flexible middle.
@@ -2623,8 +2662,8 @@ impl MellowdeckShell {
                 .child(
                     canvas(
                         move |bounds, _window, cx| {
-                            let _ =
-                                handle.update(cx, |this, _| this.volume_slider_bounds = Some(bounds));
+                            let _ = handle
+                                .update(cx, |this, _| this.volume_slider_bounds = Some(bounds));
                         },
                         |_bounds, (), _window, _cx| {},
                     )
@@ -2661,7 +2700,9 @@ impl MellowdeckShell {
             .flex_col()
             .items_center()
             .gap_3()
-            .child(div().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).child(format!("{volume}%")))
+            .child(
+                div().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).child(format!("{volume}%")),
+            )
             .child(div().flex().justify_center().w(px(24.0)).child(track))
             .into_any_element()
     }
@@ -2682,47 +2723,50 @@ impl MellowdeckShell {
         let device_glyph = if remote { "📡" } else { "🖥" };
         let device_color = if remote { RED } else { self.pal.ink };
 
-        let volume_button = self.icon_button(
-            "player-volume",
-            volume_glyph,
-            self.player_panel == Some(PlayerPanel::Volume),
-            self.pal.ink,
-        )
-        .tooltip(text_tooltip("Volume"))
-        .on_hover(cx.listener(|this, hovering: &bool, _, cx| {
-            this.hover_volume(*hovering, cx);
-        }))
-        .on_scroll_wheel(cx.listener(Self::scroll_volume))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                if event.click_count >= 2 {
-                    this.toggle_mute(cx);
-                }
-            }),
-        );
+        let volume_button = self
+            .icon_button(
+                "player-volume",
+                volume_glyph,
+                self.player_panel == Some(PlayerPanel::Volume),
+                self.pal.ink,
+            )
+            .tooltip(text_tooltip("Volume"))
+            .on_hover(cx.listener(|this, hovering: &bool, _, cx| {
+                this.hover_volume(*hovering, cx);
+            }))
+            .on_scroll_wheel(cx.listener(Self::scroll_volume))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.toggle_mute(cx);
+                    }
+                }),
+            );
 
-        let queue_button = self.icon_button(
-            "player-queue",
-            "≡",
-            self.player_panel == Some(PlayerPanel::Queue),
-            self.pal.ink,
-        )
-        .tooltip(text_tooltip("Queue"))
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.toggle_player_panel(PlayerPanel::Queue, cx);
-        }));
+        let queue_button = self
+            .icon_button(
+                "player-queue",
+                "≡",
+                self.player_panel == Some(PlayerPanel::Queue),
+                self.pal.ink,
+            )
+            .tooltip(text_tooltip("Queue"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.toggle_player_panel(PlayerPanel::Queue, cx);
+            }));
 
-        let device_button = self.icon_button(
-            "player-device",
-            device_glyph,
-            self.player_panel == Some(PlayerPanel::Devices),
-            device_color,
-        )
-        .tooltip(text_tooltip(if remote { "Playing on another device" } else { "Devices" }))
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.toggle_player_panel(PlayerPanel::Devices, cx);
-        }));
+        let device_button = self
+            .icon_button(
+                "player-device",
+                device_glyph,
+                self.player_panel == Some(PlayerPanel::Devices),
+                device_color,
+            )
+            .tooltip(text_tooltip(if remote { "Playing on another device" } else { "Devices" }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.toggle_player_panel(PlayerPanel::Devices, cx);
+            }));
 
         div()
             .flex()
@@ -2793,11 +2837,25 @@ impl MellowdeckShell {
                             .items_center()
                             .h(px(82.0))
                             .px_5()
+                            // The title is positioned against both edges, rather than after the
+                            // variable-width actions, so it remains centered in the full header.
                             .child(
                                 div()
-                                    .text_2xl()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child(format!("Hello, {display_name}!")),
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .w(relative(0.55))
+                                            .truncate()
+                                            .text_center()
+                                            .text_2xl()
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(format!("Hello, {display_name}!")),
+                                    ),
                             )
                             .child(
                                 div()
@@ -2993,6 +3051,18 @@ fn waveform_seed(title: &str, duration_ms: u64) -> u64 {
     hash ^ duration_ms
 }
 
+/// Converts a pointer's screen x coordinate into a seek fraction for the actual interactive
+/// track rectangle. This intentionally does not use the player/container width.
+fn seek_ratio(pointer_x: f32, track_left: f32, track_width: f32) -> Option<f32> {
+    if !track_width.is_finite()
+        || track_width <= 0.0
+        || !pointer_x.is_finite()
+        || !track_left.is_finite()
+    {
+        return None;
+    }
+    Some(((pointer_x - track_left) / track_width).clamp(0.0, 1.0))
+}
 /// Generates smoothed, music-like bar heights in `0.18..=1.0` from a seed.
 #[allow(clippy::cast_precision_loss)]
 fn waveform_bars(seed: u64, count: usize) -> Vec<f32> {
@@ -3000,7 +3070,8 @@ fn waveform_bars(seed: u64, count: usize) -> Vec<f32> {
     let mut state = seed | 1;
     let mut raw = Vec::with_capacity(count);
     for _ in 0..count {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        state =
+            state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
         // Take 24 high bits and normalise to 0.0..1.0.
         let bits = (state >> 40) as u32;
         raw.push(bits as f32 / 16_777_216.0);
@@ -3050,12 +3121,7 @@ fn waveform_bar_elements(
                 std::cmp::Ordering::Equal => 0xFF_6B_5E,
                 std::cmp::Ordering::Greater => rest_color,
             };
-            div()
-                .flex_1()
-                .h(px(height * scale))
-                .rounded_full()
-                .bg(rgb(color))
-                .into_any_element()
+            div().flex_1().h(px(height * scale)).rounded_full().bg(rgb(color)).into_any_element()
         })
         .collect()
 }
@@ -3132,7 +3198,7 @@ pub fn run_desktop_with(
 
 #[cfg(test)]
 mod tests {
-    use super::{WAVEFORM_BARS, format_time, waveform_bars, waveform_seed};
+    use super::{WAVEFORM_BARS, format_time, seek_ratio, waveform_bars, waveform_seed};
 
     #[test]
     fn format_time_pads_seconds() {
@@ -3141,6 +3207,17 @@ mod tests {
         assert_eq!(format_time(83_000), "1:23");
     }
 
+    #[test]
+    fn seek_ratio_uses_track_geometry_and_clamps_to_the_track() {
+        assert_eq!(seek_ratio(120.0, 120.0, 200.0), Some(0.0));
+        assert_eq!(seek_ratio(170.0, 120.0, 200.0), Some(0.25));
+        assert_eq!(seek_ratio(220.0, 120.0, 200.0), Some(0.5));
+        assert_eq!(seek_ratio(270.0, 120.0, 200.0), Some(0.75));
+        assert_eq!(seek_ratio(320.0, 120.0, 200.0), Some(1.0));
+        assert_eq!(seek_ratio(20.0, 120.0, 200.0), Some(0.0));
+        assert_eq!(seek_ratio(400.0, 120.0, 200.0), Some(1.0));
+        assert_eq!(seek_ratio(120.0, 120.0, 0.0), None);
+    }
     #[test]
     fn waveform_seed_is_stable_and_track_specific() {
         assert_eq!(waveform_seed("Song", 180_000), waveform_seed("Song", 180_000));

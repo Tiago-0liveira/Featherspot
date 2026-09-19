@@ -14,6 +14,71 @@ pub struct SpotifyDisplayItem {
     pub artwork_url: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpotifyEntityKind {
+    Track,
+    Album,
+    Artist,
+    Playlist,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpotifyBrowseItem {
+    pub id: String,
+    pub kind: SpotifyEntityKind,
+    pub title: String,
+    pub subtitle: String,
+    pub metadata: String,
+    pub uri: Option<String>,
+    pub external_url: Option<String>,
+    pub artwork_url: Option<String>,
+    pub artists: Vec<(String, Option<String>)>,
+    pub album: Option<(String, String)>,
+    pub duration_ms: Option<u64>,
+    pub available: bool,
+    pub position: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpotifyPage<T> {
+    pub items: Vec<T>,
+    pub offset: u32,
+    pub limit: u32,
+    pub total: u32,
+    pub next_offset: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpotifyDetailKind {
+    Album,
+    Playlist,
+    Artist,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SpotifyContentState {
+    Available,
+    Empty,
+    Restricted(String),
+    Partial(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpotifyDetailPage {
+    pub kind: SpotifyDetailKind,
+    pub title: String,
+    pub description: String,
+    pub uri: String,
+    pub external_url: Option<String>,
+    pub artwork_url: Option<String>,
+    pub owner: Option<String>,
+    pub release: Option<String>,
+    pub total: u32,
+    pub items: SpotifyPage<SpotifyBrowseItem>,
+    pub releases: Vec<SpotifyBrowseItem>,
+    pub state: SpotifyContentState,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpotifySearchItem {
     pub title: String,
@@ -57,6 +122,14 @@ pub struct SpotifyPlayback {
     pub duration_ms: u64,
     pub volume_percent: Option<u8>,
     pub device_name: Option<String>,
+    pub track_uri: Option<String>,
+    pub context_uri: Option<String>,
+    pub album: String,
+    pub album_uri: Option<String>,
+    pub device_id: Option<String>,
+    pub shuffle: bool,
+    pub repeat: String,
+    pub actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +145,12 @@ pub struct SpotifyDevice {
 pub struct SpotifyQueue {
     pub current: Option<SpotifyDisplayItem>,
     pub upcoming: Vec<SpotifyDisplayItem>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SpotifyTypedQueue {
+    pub current: Option<SpotifyBrowseItem>,
+    pub upcoming: Vec<SpotifyBrowseItem>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -216,6 +295,285 @@ impl SpotifyWebApi {
         Ok(results)
     }
 
+    /// Searches typed entities with an explicit page offset.
+    ///
+    /// # Errors
+    /// Returns an error for invalid input, authorization, networking, rate limits, or malformed data.
+    pub fn search_page(
+        &self,
+        access_token: &str,
+        query: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<SpotifyPage<SpotifyBrowseItem>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(SpotifyPage {
+                items: Vec::new(),
+                offset,
+                limit,
+                total: 0,
+                next_offset: None,
+            });
+        }
+        let response: SearchResponse = self.get(
+            "/search",
+            access_token,
+            &[
+                ("q", query),
+                ("type", "track,album,artist,playlist"),
+                ("offset", offset.to_string().as_str()),
+                ("limit", limit.min(50).to_string().as_str()),
+            ],
+        )?;
+        let mut items = Vec::new();
+        let mut totals = Vec::new();
+        let mut has_next = false;
+        if let Some(page) = response.tracks {
+            totals.push(page.total);
+            has_next |= page.next.is_some();
+            items.extend(
+                page.items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(position, track)| browse_track(track, Some(position))),
+            );
+        }
+        if let Some(page) = response.albums {
+            totals.push(page.total);
+            has_next |= page.next.is_some();
+            items.extend(page.items.into_iter().map(browse_album));
+        }
+        if let Some(page) = response.artists {
+            totals.push(page.total);
+            has_next |= page.next.is_some();
+            items.extend(page.items.into_iter().map(browse_artist));
+        }
+        if let Some(page) = response.playlists {
+            totals.push(page.total);
+            has_next |= page.next.is_some();
+            items.extend(page.items.into_iter().flatten().map(browse_playlist));
+        }
+        Ok(SpotifyPage {
+            items,
+            offset,
+            limit,
+            total: totals.into_iter().sum(),
+            next_offset: has_next.then_some(offset.saturating_add(limit)),
+        })
+    }
+
+    /// Loads one page of saved albums without collapsing pagination metadata.
+    ///
+    /// # Errors
+    /// Returns an error when Spotify rejects the request or returns malformed data.
+    pub fn saved_albums_page(
+        &self,
+        token: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<SpotifyPage<SpotifyBrowseItem>> {
+        let page: AlbumPage = self.get(
+            "/me/albums",
+            token,
+            &[
+                ("offset", offset.to_string().as_str()),
+                ("limit", limit.min(50).to_string().as_str()),
+            ],
+        )?;
+        Ok(SpotifyPage {
+            items: page.items.into_iter().map(|saved| browse_album(saved.album)).collect(),
+            offset: page.offset.unwrap_or(offset),
+            limit: page.limit.unwrap_or(limit),
+            total: page.total,
+            next_offset: page.next.map(|_| offset.saturating_add(limit)),
+        })
+    }
+
+    /// Loads one page of the current user's playlists.
+    ///
+    /// # Errors
+    /// Returns an error when Spotify rejects the request or returns malformed data.
+    pub fn playlists_page(
+        &self,
+        token: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<SpotifyPage<SpotifyBrowseItem>> {
+        let page: PlaylistPage = self.get(
+            "/me/playlists",
+            token,
+            &[
+                ("offset", offset.to_string().as_str()),
+                ("limit", limit.min(50).to_string().as_str()),
+            ],
+        )?;
+        Ok(SpotifyPage {
+            items: page.items.into_iter().map(browse_playlist).collect(),
+            offset: page.offset.unwrap_or(offset),
+            limit: page.limit.unwrap_or(limit),
+            total: page.total,
+            next_offset: page.next.map(|_| offset.saturating_add(limit)),
+        })
+    }
+
+    /// Loads playlist metadata and its `/playlists/{id}/items` page independently.
+    /// A Development Mode restriction is represented as content state rather than an empty list.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid URI or when metadata or non-restricted item loading fails.
+    pub fn playlist_page(
+        &self,
+        token: &str,
+        uri: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<SpotifyDetailPage> {
+        let parsed = parse_uri(uri, SpotifyItemKind::Playlist)?;
+        let metadata: PlaylistDetailObject =
+            self.get(&format!("/playlists/{}", parsed.id()), token, &[])?;
+        let items_result = self.get::<PlaylistItemsPage>(
+            &format!("/playlists/{}/items", parsed.id()),
+            token,
+            &[
+                ("offset", offset.to_string().as_str()),
+                ("limit", limit.min(50).to_string().as_str()),
+            ],
+        );
+        let (items, state) = match items_result {
+            Ok(page) => {
+                let normalized = normalize_playlist_items(page, offset, limit);
+                let state = if normalized.items.is_empty() { SpotifyContentState::Empty } else { SpotifyContentState::Available };
+                (normalized, state)
+            }
+            Err(error) if error.kind == ErrorKind::Restricted => (
+                SpotifyPage { items: Vec::new(), offset, limit, total: metadata.items.as_ref().map_or(0, |value| value.total), next_offset: None },
+                SpotifyContentState::Restricted("Spotify Development Mode does not expose this playlist's contents. Open it in Spotify to view or play it.".into()),
+            ),
+            Err(error) => return Err(error),
+        };
+        Ok(SpotifyDetailPage {
+            kind: SpotifyDetailKind::Playlist,
+            title: metadata.name,
+            description: metadata.description.unwrap_or_default(),
+            uri: metadata.uri.unwrap_or_else(|| uri.to_owned()),
+            external_url: metadata.external_urls.and_then(|urls| urls.spotify),
+            artwork_url: first_image(&metadata.images),
+            owner: metadata.owner.and_then(|owner| owner.display_name.or(owner.id)),
+            release: None,
+            total: items.total,
+            items,
+            releases: Vec::new(),
+            state,
+        })
+    }
+
+    /// Loads a complete album page with ordered track/disc metadata.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid URI or when Spotify rejects or malforms the response.
+    pub fn album_page(&self, token: &str, uri: &str) -> Result<SpotifyDetailPage> {
+        let parsed = parse_uri(uri, SpotifyItemKind::Album)?;
+        let album: AlbumDetailObject = self.get(&format!("/albums/{}", parsed.id()), token, &[])?;
+        let context_uri = album.uri.clone().unwrap_or_else(|| uri.to_owned());
+        let cover = first_image(&album.images);
+        let mut tracks = album.tracks.unwrap_or_default();
+        while tracks.next.is_some() {
+            let offset = tracks.offset.unwrap_or_default().saturating_add(
+                tracks
+                    .limit
+                    .unwrap_or_else(|| u32::try_from(tracks.items.len()).unwrap_or(50))
+                    .max(1),
+            );
+            let next: TrackPage = self.get(
+                &format!("/albums/{}/tracks", parsed.id()),
+                token,
+                &[("offset", offset.to_string().as_str()), ("limit", "50")],
+            )?;
+            tracks.next.clone_from(&next.next);
+            tracks.offset = next.offset.or(Some(offset));
+            tracks.limit = next.limit.or(Some(50));
+            tracks.total = tracks.total.max(next.total);
+            tracks.items.extend(next.items);
+        }
+        let total = tracks.total.max(u32::try_from(tracks.items.len()).unwrap_or(u32::MAX));
+        let items = tracks
+            .items
+            .into_iter()
+            .enumerate()
+            .map(|(position, track)| {
+                let disc = track.disc_number.unwrap_or(1);
+                let number = track
+                    .track_number
+                    .unwrap_or_else(|| u32::try_from(position + 1).unwrap_or(u32::MAX));
+                let mut item = browse_track(track, Some(position));
+                item.artwork_url.clone_from(&cover);
+                item.metadata = format!("Disc {disc} · Track {number}");
+                item
+            })
+            .collect();
+        let description = artist_names(&album.artists);
+        Ok(SpotifyDetailPage {
+            kind: SpotifyDetailKind::Album,
+            title: album.name,
+            description,
+            uri: context_uri,
+            external_url: album.external_urls.and_then(|urls| urls.spotify),
+            artwork_url: cover,
+            owner: None,
+            release: album.release_date,
+            total,
+            items: SpotifyPage { items, offset: 0, limit: total, total, next_offset: None },
+            releases: Vec::new(),
+            state: if total == 0 {
+                SpotifyContentState::Empty
+            } else {
+                SpotifyContentState::Available
+            },
+        })
+    }
+
+    /// Loads an artist plus search-derived songs and releases.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid URI or when the artist profile cannot be loaded.
+    pub fn artist_page(&self, token: &str, uri: &str) -> Result<SpotifyDetailPage> {
+        let detail = self.artist(token, uri)?;
+        let songs = detail
+            .songs
+            .into_iter()
+            .enumerate()
+            .map(|(position, item)| browse_display(item, SpotifyEntityKind::Track, Some(position)))
+            .collect::<Vec<_>>();
+        let releases = detail
+            .albums
+            .into_iter()
+            .map(|item| browse_display(item, SpotifyEntityKind::Album, None))
+            .collect::<Vec<_>>();
+        let state =
+            detail.warning.map_or(SpotifyContentState::Available, SpotifyContentState::Partial);
+        Ok(SpotifyDetailPage {
+            kind: SpotifyDetailKind::Artist,
+            title: detail.name,
+            description: detail.description,
+            uri: detail.uri,
+            external_url: None,
+            artwork_url: detail.artwork_url,
+            owner: None,
+            release: None,
+            total: u32::try_from(songs.len()).unwrap_or(u32::MAX),
+            items: SpotifyPage {
+                total: u32::try_from(songs.len()).unwrap_or(u32::MAX),
+                items: songs,
+                offset: 0,
+                limit: 10,
+                next_offset: None,
+            },
+            releases,
+            state,
+        })
+    }
+
     /// Loads an artist profile, releases, and supported song search results.
     ///
     /// Spotify removed the dedicated artist-top-tracks endpoint from Development Mode in 2026,
@@ -357,10 +715,11 @@ impl SpotifyWebApi {
         }
         let status = response.status();
         if !status.is_success() {
-            return Err(status_error(status));
+            return Err(response_error(&response));
         }
         let state: PlaybackResponse = response.json().map_err(|error| invalid_data(&error))?;
         let item = state.item;
+        let album = item.as_ref().and_then(|track| track.album.as_ref());
         Ok(SpotifyPlayback {
             title: item.as_ref().map_or_else(String::new, |track| track.name.clone()),
             subtitle: item.as_ref().map_or_else(String::new, |track| artist_names(&track.artists)),
@@ -377,9 +736,17 @@ impl SpotifyWebApi {
                 .and_then(|album| first_image(&album.images)),
             playing: state.is_playing,
             progress_ms: state.progress_ms.unwrap_or_default(),
-            duration_ms: item.and_then(|track| track.duration_ms).unwrap_or_default(),
+            duration_ms: item.as_ref().and_then(|track| track.duration_ms).unwrap_or_default(),
             volume_percent: state.device.as_ref().and_then(|device| device.volume_percent),
-            device_name: state.device.map(|device| device.name),
+            device_name: state.device.as_ref().map(|device| device.name.clone()),
+            track_uri: item.as_ref().and_then(|track| track.uri.clone()),
+            context_uri: state.context.and_then(|context| context.uri),
+            album: album.map_or_else(String::new, |album| album.name.clone()),
+            album_uri: album.and_then(|album| album.uri.clone()),
+            device_id: state.device.as_ref().and_then(|device| device.id.clone()),
+            shuffle: state.shuffle_state,
+            repeat: state.repeat_state.unwrap_or_else(|| "off".into()),
+            actions: state.actions.map_or_else(Vec::new, PlaybackActions::available),
         })
     }
 
@@ -418,6 +785,23 @@ impl SpotifyWebApi {
         })
     }
 
+    /// Gets the queue with typed identity, album, artwork, and duration metadata.
+    ///
+    /// # Errors
+    /// Returns an error for authorization, restrictions, rate limits, networking, or invalid data.
+    pub fn typed_queue(&self, token: &str) -> Result<SpotifyTypedQueue> {
+        let response: QueueResponse = self.get("/me/player/queue", token, &[])?;
+        Ok(SpotifyTypedQueue {
+            current: response.currently_playing.map(|track| browse_track(track, None)),
+            upcoming: response
+                .queue
+                .into_iter()
+                .enumerate()
+                .map(|(position, track)| browse_track(track, Some(position)))
+                .collect(),
+        })
+    }
+
     /// Starts a track or context URI on the active Spotify Connect device.
     ///
     /// # Errors
@@ -439,14 +823,49 @@ impl SpotifyWebApi {
         device_id: Option<&str>,
     ) -> Result<()> {
         let body = if uri.starts_with("spotify:track:") {
-            PlayBody { uris: Some(vec![uri]), context_uri: None }
+            PlayBody { uris: Some(vec![uri]), context_uri: None, offset: None }
         } else if uri.starts_with("spotify:album:")
             || uri.starts_with("spotify:artist:")
             || uri.starts_with("spotify:playlist:")
         {
-            PlayBody { uris: None, context_uri: Some(uri) }
+            PlayBody { uris: None, context_uri: Some(uri), offset: None }
         } else {
             return Err(AppError::new(ErrorKind::InvalidInput, "unsupported Spotify play URI"));
+        };
+        let mut request = self.client.put(format!("{API_BASE_URL}/me/player/play"));
+        if let Some(device_id) = device_id {
+            request = request.query(&[("device_id", device_id)]);
+        }
+        Self::send_command(request, token, &body)
+    }
+
+    /// Starts a context at its original zero-based position. Positional offsets preserve duplicate
+    /// tracks, unlike URI offsets which always identify the first matching track.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid context, an excessive position, or a rejected command.
+    pub fn play_context_at(
+        &self,
+        token: &str,
+        context_uri: &str,
+        position: usize,
+        device_id: Option<&str>,
+    ) -> Result<()> {
+        let parsed = context_uri
+            .parse::<SpotifyUri>()
+            .map_err(|_| AppError::new(ErrorKind::InvalidInput, "invalid Spotify context URI"))?;
+        if !matches!(parsed.kind(), SpotifyItemKind::Album | SpotifyItemKind::Playlist) {
+            return Err(AppError::new(
+                ErrorKind::InvalidInput,
+                "context offsets require an album or playlist",
+            ));
+        }
+        let position = u32::try_from(position)
+            .map_err(|_| AppError::new(ErrorKind::InvalidInput, "context position is too large"))?;
+        let body = PlayBody {
+            uris: None,
+            context_uri: Some(context_uri),
+            offset: Some(PlayOffset { position }),
         };
         let mut request = self.client.put(format!("{API_BASE_URL}/me/player/play"));
         if let Some(device_id) = device_id {
@@ -638,7 +1057,7 @@ impl SpotifyWebApi {
             .body(Vec::new())
             .send()
             .map_err(network_error)?;
-        if response.status().is_success() { Ok(()) } else { Err(status_error(response.status())) }
+        if response.status().is_success() { Ok(()) } else { Err(response_error(&response)) }
     }
 
     fn send_command(
@@ -647,7 +1066,7 @@ impl SpotifyWebApi {
         body: &impl Serialize,
     ) -> Result<()> {
         let response = request.bearer_auth(token).json(body).send().map_err(network_error)?;
-        if response.status().is_success() { Ok(()) } else { Err(status_error(response.status())) }
+        if response.status().is_success() { Ok(()) } else { Err(response_error(&response)) }
     }
 
     fn get<T: DeserializeOwned>(
@@ -665,7 +1084,7 @@ impl SpotifyWebApi {
             .map_err(network_error)?;
         let status = response.status();
         if !status.is_success() {
-            return Err(status_error(status));
+            return Err(response_error(&response));
         }
         response.json().map_err(|error| {
             AppError::new(ErrorKind::Network, format!("Spotify returned invalid data: {error}"))
@@ -686,6 +1105,161 @@ fn track_item(track: TrackObject) -> SpotifyDisplayItem {
         uri: track.uri,
         title: track.name,
         subtitle: artist_names(&track.artists),
+    }
+}
+
+fn parse_uri(uri: &str, expected: SpotifyItemKind) -> Result<SpotifyUri> {
+    let parsed = uri
+        .parse::<SpotifyUri>()
+        .map_err(|_| AppError::new(ErrorKind::InvalidInput, "invalid Spotify URI"))?;
+    if parsed.kind() != expected {
+        return Err(AppError::new(ErrorKind::InvalidInput, "unexpected Spotify entity type"));
+    }
+    Ok(parsed)
+}
+
+fn id_from_uri(uri: Option<&str>, fallback: &str) -> String {
+    uri.and_then(|value| value.rsplit(':').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+fn browse_track(track: TrackObject, position: Option<usize>) -> SpotifyBrowseItem {
+    let album = track.album.as_ref();
+    let uri = track.uri.clone();
+    let supported = uri
+        .as_deref()
+        .and_then(|value| value.parse::<SpotifyUri>().ok())
+        .is_some_and(|value| value.kind() == SpotifyItemKind::Track);
+    SpotifyBrowseItem {
+        id: id_from_uri(uri.as_deref(), &format!("track-{}", position.unwrap_or_default())),
+        kind: SpotifyEntityKind::Track,
+        title: track.name,
+        subtitle: artist_names(&track.artists),
+        metadata: format!(
+            "Disc {} · Track {}{}",
+            track.disc_number.unwrap_or(1),
+            track.track_number.unwrap_or_else(|| position
+                .and_then(|value| u32::try_from(value + 1).ok())
+                .unwrap_or(1)),
+            if track.is_local { " · local" } else { "" }
+        ),
+        uri,
+        external_url: track.external_urls.and_then(|urls| urls.spotify),
+        artwork_url: album.and_then(|value| first_image(&value.images)),
+        artists: track.artists.into_iter().map(|artist| (artist.name, artist.uri)).collect(),
+        album: album
+            .and_then(|value| value.uri.as_ref().map(|uri| (value.name.clone(), uri.clone()))),
+        duration_ms: track.duration_ms,
+        available: track.is_playable.unwrap_or(true) && !track.is_local && supported,
+        position,
+    }
+}
+
+fn browse_album(album: AlbumObject) -> SpotifyBrowseItem {
+    let uri = album.uri.clone();
+    SpotifyBrowseItem {
+        id: id_from_uri(uri.as_deref(), &album.name),
+        kind: SpotifyEntityKind::Album,
+        title: album.name,
+        subtitle: artist_names(&album.artists),
+        metadata: String::new(),
+        uri,
+        external_url: album.external_urls.and_then(|urls| urls.spotify),
+        artwork_url: first_image(&album.images),
+        artists: album.artists.into_iter().map(|artist| (artist.name, artist.uri)).collect(),
+        album: None,
+        duration_ms: None,
+        available: true,
+        position: None,
+    }
+}
+
+fn browse_artist(artist: ArtistObject) -> SpotifyBrowseItem {
+    let uri = artist.uri.clone();
+    SpotifyBrowseItem {
+        id: id_from_uri(uri.as_deref(), &artist.name),
+        kind: SpotifyEntityKind::Artist,
+        title: artist.name,
+        subtitle: artist.genres.join(" · "),
+        metadata: String::new(),
+        uri,
+        external_url: artist.external_urls.and_then(|urls| urls.spotify),
+        artwork_url: first_image(&artist.images),
+        artists: Vec::new(),
+        album: None,
+        duration_ms: None,
+        available: true,
+        position: None,
+    }
+}
+
+fn browse_playlist(playlist: PlaylistObject) -> SpotifyBrowseItem {
+    let uri = playlist.uri.clone();
+    SpotifyBrowseItem {
+        id: id_from_uri(uri.as_deref(), &playlist.name),
+        kind: SpotifyEntityKind::Playlist,
+        title: playlist.name,
+        subtitle: playlist
+            .items
+            .map_or_else(|| "Playlist".into(), |items| format!("{} tracks", items.total)),
+        metadata: String::new(),
+        uri,
+        external_url: playlist.external_urls.and_then(|urls| urls.spotify),
+        artwork_url: first_image(&playlist.images),
+        artists: Vec::new(),
+        album: None,
+        duration_ms: None,
+        available: true,
+        position: None,
+    }
+}
+
+fn browse_display(
+    item: SpotifyDisplayItem,
+    kind: SpotifyEntityKind,
+    position: Option<usize>,
+) -> SpotifyBrowseItem {
+    SpotifyBrowseItem {
+        id: id_from_uri(item.uri.as_deref(), &item.title),
+        kind,
+        title: item.title,
+        subtitle: item.subtitle,
+        metadata: String::new(),
+        uri: item.uri,
+        external_url: None,
+        artwork_url: item.artwork_url,
+        artists: Vec::new(),
+        album: None,
+        duration_ms: None,
+        available: true,
+        position,
+    }
+}
+
+fn normalize_playlist_items(
+    page: PlaylistItemsPage,
+    fallback_offset: u32,
+    fallback_limit: u32,
+) -> SpotifyPage<SpotifyBrowseItem> {
+    let offset = page.offset.unwrap_or(fallback_offset);
+    let mut items = Vec::new();
+    for (relative, entry) in page.items.into_iter().enumerate() {
+        let Some(track) = entry.and_then(PlaylistItemObject::into_track) else {
+            continue;
+        };
+        let absolute = usize::try_from(offset).unwrap_or(usize::MAX).saturating_add(relative);
+        let mut item = browse_track(track, Some(absolute));
+        item.metadata = format!("Playlist position {}", absolute + 1);
+        items.push(item);
+    }
+    SpotifyPage {
+        items,
+        offset,
+        limit: page.limit.unwrap_or(fallback_limit),
+        total: page.total,
+        next_offset: page.next.map(|_| offset.saturating_add(page.limit.unwrap_or(fallback_limit))),
     }
 }
 
@@ -714,6 +1288,22 @@ fn status_error(status: StatusCode) -> AppError {
     AppError::new(kind, format!("{message} (HTTP {})", status.as_u16()))
 }
 
+fn response_error(response: &reqwest::blocking::Response) -> AppError {
+    if response.status() == StatusCode::TOO_MANY_REQUESTS
+        && let Some(seconds) = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+    {
+        return AppError::rate_limited(
+            format!("Spotify request limit reached; retry in {seconds} seconds"),
+            Duration::from_secs(seconds),
+        );
+    }
+    status_error(response.status())
+}
+
 fn network_error(error: reqwest::Error) -> AppError {
     let message = error.to_string();
     drop(error);
@@ -730,6 +1320,13 @@ struct PlayBody<'a> {
     uris: Option<Vec<&'a str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_uri: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<PlayOffset>,
+}
+
+#[derive(Serialize)]
+struct PlayOffset {
+    position: u32,
 }
 
 #[derive(Serialize)]
@@ -745,6 +1342,42 @@ struct PlaybackResponse {
     progress_ms: Option<u64>,
     item: Option<TrackObject>,
     device: Option<DeviceObject>,
+    context: Option<PlaybackContext>,
+    #[serde(default)]
+    shuffle_state: bool,
+    repeat_state: Option<String>,
+    actions: Option<PlaybackActions>,
+}
+
+#[derive(Deserialize)]
+struct PlaybackContext {
+    uri: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PlaybackActions {
+    #[serde(default)]
+    disallows: std::collections::HashMap<String, bool>,
+}
+
+impl PlaybackActions {
+    fn available(self) -> Vec<String> {
+        [
+            "pausing",
+            "resuming",
+            "seeking",
+            "skipping_prev",
+            "skipping_next",
+            "toggling_shuffle",
+            "setting_repeat_context",
+            "setting_repeat_track",
+            "transferring_playback",
+        ]
+        .into_iter()
+        .filter(|action| !self.disallows.get(*action).copied().unwrap_or(false))
+        .map(str::to_owned)
+        .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -784,10 +1417,15 @@ struct HistoryItem {
     track: TrackObject,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct TrackPage {
     #[serde(default)]
     items: Vec<TrackObject>,
+    #[serde(default)]
+    total: u32,
+    next: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -798,12 +1436,21 @@ struct TrackObject {
     duration_ms: Option<u64>,
     #[serde(default)]
     artists: Vec<ArtistObject>,
+    #[serde(default)]
+    is_local: bool,
+    is_playable: Option<bool>,
+    disc_number: Option<u32>,
+    track_number: Option<u32>,
+    external_urls: Option<ExternalUrls>,
 }
 
 #[derive(Deserialize)]
 struct ArtistPage {
     #[serde(default)]
     items: Vec<ArtistObject>,
+    #[serde(default)]
+    total: u32,
+    next: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -814,12 +1461,18 @@ struct ArtistObject {
     images: Vec<ImageObject>,
     #[serde(default)]
     genres: Vec<String>,
+    external_urls: Option<ExternalUrls>,
 }
 
 #[derive(Deserialize)]
 struct AlbumPage {
     #[serde(default)]
     items: Vec<SavedAlbum>,
+    #[serde(default)]
+    total: u32,
+    next: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -835,6 +1488,7 @@ struct AlbumObject {
     images: Vec<ImageObject>,
     #[serde(default)]
     artists: Vec<ArtistObject>,
+    external_urls: Option<ExternalUrls>,
 }
 
 #[derive(Deserialize)]
@@ -847,12 +1501,18 @@ struct AlbumDetailObject {
     #[serde(default)]
     artists: Vec<ArtistObject>,
     tracks: Option<TrackPage>,
+    external_urls: Option<ExternalUrls>,
 }
 
 #[derive(Deserialize)]
 struct PlaylistPage {
     #[serde(default)]
     items: Vec<PlaylistObject>,
+    #[serde(default)]
+    total: u32,
+    next: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -862,6 +1522,53 @@ struct PlaylistObject {
     #[serde(default)]
     images: Vec<ImageObject>,
     items: Option<PlaylistItems>,
+    external_urls: Option<ExternalUrls>,
+}
+
+#[derive(Deserialize)]
+struct PlaylistDetailObject {
+    name: String,
+    uri: Option<String>,
+    description: Option<String>,
+    #[serde(default)]
+    images: Vec<ImageObject>,
+    items: Option<PlaylistItems>,
+    owner: Option<OwnerObject>,
+    external_urls: Option<ExternalUrls>,
+}
+
+#[derive(Deserialize)]
+struct OwnerObject {
+    id: Option<String>,
+    display_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExternalUrls {
+    spotify: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PlaylistItemsPage {
+    #[serde(default)]
+    items: Vec<Option<PlaylistItemObject>>,
+    #[serde(default)]
+    total: u32,
+    next: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct PlaylistItemObject {
+    item: Option<TrackObject>,
+    track: Option<TrackObject>,
+}
+
+impl PlaylistItemObject {
+    fn into_track(self) -> Option<TrackObject> {
+        self.item.or(self.track)
+    }
 }
 
 #[derive(Deserialize)]
@@ -886,12 +1593,18 @@ struct SearchResponse {
 struct SearchAlbumPage {
     #[serde(default)]
     items: Vec<AlbumObject>,
+    #[serde(default)]
+    total: u32,
+    next: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SearchPlaylistPage {
     #[serde(default)]
     items: Vec<Option<PlaylistObject>>,
+    #[serde(default)]
+    total: u32,
+    next: Option<String>,
 }
 
 #[cfg(test)]
@@ -965,5 +1678,49 @@ mod tests {
         .unwrap();
         assert_eq!(response.queue.len(), 1);
         assert!(response.queue[0].artists.is_empty());
+    }
+
+    #[test]
+    fn playlist_items_normalize_variants_nulls_and_duplicate_positions() {
+        let page: PlaylistItemsPage = serde_json::from_str(
+            r#"{
+            "offset":50,"limit":50,"total":103,"next":"next-page","items":[
+                null,
+                {"item":{"name":"Again","uri":"spotify:track:same","duration_ms":1000}},
+                {"track":{"name":"Again","uri":"spotify:track:same","duration_ms":1000}},
+                {"item":null}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let normalized = normalize_playlist_items(page, 0, 50);
+        assert_eq!(normalized.items.len(), 2);
+        assert_eq!(normalized.items[0].position, Some(51));
+        assert_eq!(normalized.items[1].position, Some(52));
+        assert_eq!(normalized.items[0].uri, normalized.items[1].uri);
+        assert_eq!(normalized.next_offset, Some(100));
+    }
+
+    #[test]
+    fn page_shape_preserves_offsets_beyond_fifty() {
+        let page: AlbumPage = serde_json::from_str(
+            r#"{"offset":50,"limit":50,"total":120,"next":"page-3","items":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(page.offset, Some(50));
+        assert_eq!(page.total, 120);
+        assert!(page.next.is_some());
+    }
+
+    #[test]
+    fn context_playback_serializes_positional_offset() {
+        let body = PlayBody {
+            uris: None,
+            context_uri: Some("spotify:playlist:abc"),
+            offset: Some(PlayOffset { position: 7 }),
+        };
+        let value = serde_json::to_value(body).unwrap();
+        assert_eq!(value["offset"]["position"], 7);
+        assert_eq!(value["context_uri"], "spotify:playlist:abc");
     }
 }

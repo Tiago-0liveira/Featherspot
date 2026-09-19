@@ -152,6 +152,29 @@ pub enum FrameRateLimit {
     Fps120,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliArtworkPreference {
+    #[default]
+    Auto,
+    Blocks,
+    Off,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct CliSettings {
+    pub artwork: CliArtworkPreference,
+    pub mouse: bool,
+    pub wide_queue: bool,
+}
+
+impl Default for CliSettings {
+    fn default() -> Self {
+        Self { artwork: CliArtworkPreference::Auto, mouse: true, wide_queue: true }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct SettingsState {
@@ -161,6 +184,8 @@ pub struct SettingsState {
     pub frame_rate: FrameRateLimit,
     pub cache_limit_mb: u32,
     pub client_id: Option<String>,
+    /// Terminal-only preferences. Optional/defaulted for settings written by older releases.
+    pub cli: Option<CliSettings>,
 }
 
 impl Default for SettingsState {
@@ -172,6 +197,7 @@ impl Default for SettingsState {
             frame_rate: FrameRateLimit::Adaptive,
             cache_limit_mb: 500,
             client_id: None,
+            cli: None,
         }
     }
 }
