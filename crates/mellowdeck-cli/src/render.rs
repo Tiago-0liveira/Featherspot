@@ -13,7 +13,7 @@ use crate::{
     artwork::{ArtworkManager, ArtworkPlacement},
     state::{
         AppState, EntityKind, FocusRegion, LayoutMode, LibraryTab, LoadState, MIN_HEIGHT,
-        MIN_WIDTH, NoticeKind, Overlay, Route, SearchFilter,
+        MIN_WIDTH, Overlay, Route, SearchFilter,
     },
 };
 
@@ -57,12 +57,13 @@ fn render_inner(
     }
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(4), Constraint::Length(2)])
+        .constraints([Constraint::Length(2), Constraint::Min(10), Constraint::Length(9)])
         .split(area);
-    let body = vertical[0];
+    let body = vertical[1];
+    render_topbar(frame, vertical[0], state, hits);
     match state.layout {
         LayoutMode::Compact => {
-            let header = Rect { x: body.x, y: body.y, width: body.width, height: 2 };
+            let header = Rect { x: body.x, y: body.y, width: body.width, height: 0 };
             hits.add(Rect { x: header.x, y: header.y, width: 8, height: 2 }, HitTarget::MenuButton);
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -75,7 +76,7 @@ fn render_inner(
                 .block(Block::default().borders(Borders::BOTTOM)),
                 header,
             );
-            let content = Rect { y: body.y + 2, height: body.height.saturating_sub(2), ..body };
+            let content = body;
             render_content(
                 frame,
                 content,
@@ -87,7 +88,7 @@ fn render_inner(
         LayoutMode::Standard => {
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(18), Constraint::Min(40)])
+                .constraints([Constraint::Length(0), Constraint::Min(40)])
                 .split(body);
             render_sidebar(frame, columns[0], state, hits);
             render_content(
@@ -99,11 +100,16 @@ fn render_inner(
             );
         }
         LayoutMode::Wide => {
-            let queue_width = if state.queue_visible() { 34 } else { 0 };
+            // Let a wide queue grow with the terminal, while always leaving a useful main pane.
+            let queue_width = if state.queue_visible() {
+                (body.width / 3).clamp(34, body.width.saturating_sub(60))
+            } else {
+                0
+            };
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Length(18),
+                    Constraint::Length(0),
                     Constraint::Min(50),
                     Constraint::Length(queue_width),
                 ])
@@ -122,11 +128,41 @@ fn render_inner(
         }
         LayoutMode::Resize => {}
     }
-    render_player(frame, vertical[1], state, hits, if artwork_visible { artwork } else { None });
-    render_footer(frame, vertical[2], state, hits);
+    render_player(frame, vertical[2], state, hits, if artwork_visible { artwork } else { None });
     render_overlay(frame, state, hits);
 }
 
+fn render_topbar(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
+    let routes = [
+        ("⌂ Home", Route::Home),
+        ("⌕ Search", Route::Search),
+        ("▣ Library", Route::Library),
+        ("⚙ Settings", Route::Settings),
+    ];
+    let mut spans = vec![Span::styled(
+        " ♪ Mellowdeck  ",
+        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+    )];
+    let mut x = area.x.saturating_add(14);
+    for (label, route) in routes {
+        let active = route == state.primary_section;
+        let width = u16::try_from(label.chars().count() + 2).unwrap_or(u16::MAX);
+        spans.push(Span::styled(
+            format!(" {label} "),
+            if active {
+                Style::default().bg(LAVENDER).fg(INK).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(MUTED)
+            },
+        ));
+        hits.add(Rect { x, y: area.y, width, height: area.height }, HitTarget::TopNav(route));
+        x = x.saturating_add(width);
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::BOTTOM)),
+        area,
+    );
+}
 fn render_resize(frame: &mut Frame<'_>, area: Rect) {
     let text = format!(
         "Mellowdeck needs at least {MIN_WIDTH}×{MIN_HEIGHT}\nCurrent: {}×{}\n\nPress x or Ctrl-C to quit",
@@ -207,7 +243,7 @@ fn render_content(
         Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
     );
     let header_height = if has_detail {
-        7
+        10
     } else if matches!(state.page.route, Route::Search | Route::Library) {
         4
     } else {
@@ -236,7 +272,7 @@ fn render_content(
         let art_area = Rect {
             x: chunks[0].x + 1,
             y: chunks[0].y + 1,
-            width: if has_detail { 10 } else { 6 },
+            width: if has_detail { 15 } else { 6 },
             height: chunks[0].height.saturating_sub(2),
         };
         artwork.render(frame, art_area, placement, url, placeholder);
@@ -330,7 +366,7 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
         state.page.route,
         Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
     ) {
-        11
+        16
     } else {
         7
     };
@@ -447,8 +483,12 @@ fn render_empty_state(frame: &mut Frame<'_>, area: Rect, state: &LoadState) {
     );
 }
 
-fn render_queue(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
+fn render_queue(frame: &mut Frame<'_>, area: Rect, state: &mut AppState, hits: &mut HitMap) {
     hits.queue = Some(area);
+    let visible = usize::from(area.height.saturating_sub(5)).max(1);
+    state.queue_height = visible;
+    let max_offset = state.queue_upcoming.len().saturating_sub(visible);
+    state.queue.offset = state.queue.offset.min(max_offset);
     let mut rows = Vec::new();
     rows.push(ListItem::new(Line::from(Span::styled(
         " Now playing",
@@ -463,12 +503,22 @@ fn render_queue(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut 
         " Up next",
         Style::default().fg(PEACH).add_modifier(Modifier::BOLD),
     ))));
-    for (index, item) in state.queue_upcoming.iter().enumerate() {
-        rows.push(ListItem::new(format!(" {}. {} — {}", index + 1, item.title, item.subtitle)));
+    for (visible_index, (index, item)) in
+        state.queue_upcoming.iter().enumerate().skip(state.queue.offset).take(visible).enumerate()
+    {
+        let selected = index == state.queue.selected;
+        rows.push(ListItem::new(Span::styled(
+            format!(" {}. {} — {}", index + 1, item.title, item.subtitle),
+            if selected {
+                Style::default().bg(Color::Rgb(63, 55, 84)).fg(Color::White)
+            } else {
+                Style::default()
+            },
+        )));
         hits.add(
             Rect {
                 x: area.x + 1,
-                y: area.y + 4 + u16::try_from(index).unwrap_or(u16::MAX),
+                y: area.y + 4 + u16::try_from(visible_index).unwrap_or(u16::MAX),
                 width: area.width.saturating_sub(2),
                 height: 1,
             },
@@ -498,11 +548,12 @@ fn render_player(
         format!(" · {}", state.playback.album)
     };
     let inner = Block::default().borders(Borders::ALL).inner(area);
+    let art_area = Rect { width: 12, height: inner.height, ..inner };
     frame.render_widget(focus_block(" Player ", state.focus == FocusRegion::Player), area);
     let cells = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(12),
             Constraint::Length(1),
             Constraint::Min(12),
             Constraint::Length(3),
@@ -567,23 +618,84 @@ fn render_player(
             .style(Style::default().fg(LAVENDER)),
         cells[9],
     );
+    let metadata_area = Rect {
+        x: inner.x.saturating_add(13),
+        width: inner.width.saturating_sub(13),
+        height: 1,
+        ..inner
+    };
     if inner.height > 1 {
+        let artist_area = Rect { y: inner.y + 1, ..metadata_area };
         frame.render_widget(
-            Paragraph::new(format!(
-                "Device: {}   Shuffle: {}   Repeat: {}",
-                state.playback.device_name.as_deref().unwrap_or("choose with d"),
-                if state.playback.shuffle { "on" } else { "off" },
-                ["off", "context", "track"][usize::from(state.playback.repeat)]
-            ))
-            .style(Style::default().fg(MUTED))
-            .wrap(Wrap { trim: true }),
-            Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner },
+            Paragraph::new(state.playback.artist.as_str()).style(Style::default().fg(LAVENDER)),
+            artist_area,
+        );
+        let mut artist_x = artist_area.x;
+        for (title, uri) in &state.playback.artists {
+            let width = u16::try_from(title.chars().count()).unwrap_or(u16::MAX);
+            if let Some(uri) = uri {
+                hits.add(
+                    Rect { x: artist_x, width, ..artist_area },
+                    HitTarget::PlayerArtist { title: title.clone(), uri: uri.clone() },
+                );
+            }
+            artist_x = artist_x.saturating_add(width.saturating_add(2));
+        }
+    }
+    if inner.height > 2 {
+        let album_area = Rect { y: inner.y + 2, ..metadata_area };
+        frame.render_widget(
+            Paragraph::new(state.playback.album.as_str()).style(Style::default().fg(PEACH)),
+            album_area,
+        );
+        if let Some(uri) = &state.playback.album_uri {
+            hits.add(
+                Rect { width: state.playback.album.chars().count() as u16, ..album_area },
+                HitTarget::PlayerAlbum { title: state.playback.album.clone(), uri: uri.clone() },
+            );
+        }
+    }
+    if inner.height > 3 {
+        let device = state.playback.device_name.as_deref().unwrap_or("choose with d");
+        let status = state.notice.as_ref().map_or("Ready", |notice| notice.text.as_str());
+        let shuffle = if state.playback.shuffle { "on" } else { "off" };
+        let repeat = ["off", "context", "track"][usize::from(state.playback.repeat)];
+        let line = Line::from(vec![
+            Span::styled(format!("Device: {device}  "), Style::default().fg(MUTED)),
+            Span::styled("Shuffle: ", Style::default().fg(MUTED)),
+            Span::styled(
+                shuffle,
+                Style::default().fg(if state.playback.shuffle { SAGE } else { MUTED }),
+            ),
+            Span::styled("  Repeat: ", Style::default().fg(MUTED)),
+            Span::styled(
+                repeat,
+                Style::default().fg(if state.playback.repeat == 0 { MUTED } else { LAVENDER }),
+            ),
+            Span::styled(format!("  {status}  ? Help"), Style::default().fg(MUTED)),
+        ]);
+        let status_area = Rect { y: inner.y + 3, ..metadata_area };
+        frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), status_area);
+        hits.add(
+            Rect {
+                width: u16::try_from(device.chars().count() + 8).unwrap_or(u16::MAX),
+                ..status_area
+            },
+            HitTarget::PlayerDevice,
+        );
+        hits.add(
+            Rect {
+                x: status_area.x.saturating_add(status_area.width.saturating_sub(7)),
+                width: 7,
+                ..status_area
+            },
+            HitTarget::Help,
         );
     }
     if let Some(artwork) = artwork {
         artwork.render(
             frame,
-            cells[0],
+            art_area,
             ArtworkPlacement::Player,
             state.playback.artwork_url.as_deref(),
             "♪",
@@ -591,7 +703,7 @@ fn render_player(
     } else {
         frame.render_widget(
             Paragraph::new("♪").centered().style(Style::default().fg(MUTED)),
-            cells[0],
+            art_area,
         );
     }
     hits.add(cells[3], HitTarget::PlayerPrevious);
@@ -600,33 +712,6 @@ fn render_player(
     hits.add(cells[7], HitTarget::PlayerProgress);
     hits.add(cells[9], HitTarget::PlayerVolume);
 }
-fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
-    let shortcuts = match state.focus {
-        FocusRegion::Sidebar => "↑↓ route · Enter open · Tab focus · ? help · x quit",
-        FocusRegion::Queue => "↑↓ queue · Enter play now · a append · Tab focus · q full queue",
-        FocusRegion::Player => {
-            "Space play/pause · [ ] skip · Shift+←→ seek · -/+ volume · s shuffle · r repeat"
-        }
-        FocusRegion::Content => {
-            "↑↓ select · Enter open/play · ←→ tabs · / search · f filter · a queue · i inspect · ? help"
-        }
-    };
-    let notice = state.notice.as_ref().map_or(shortcuts, |notice| notice.text.as_str());
-    let color = state.notice.as_ref().map_or(MUTED, |notice| match notice.kind {
-        NoticeKind::Success => SAGE,
-        NoticeKind::Error => PEACH,
-        NoticeKind::Pending => LAVENDER,
-        NoticeKind::Info => MUTED,
-    });
-    frame.render_widget(
-        Paragraph::new(notice)
-            .style(Style::default().fg(color))
-            .block(Block::default().borders(Borders::TOP)),
-        area,
-    );
-    hits.add(area, HitTarget::Help);
-}
-
 #[allow(clippy::too_many_lines)]
 fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
     let Some(overlay) = &state.overlay else {
@@ -634,7 +719,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
     };
     let area = match overlay {
         Overlay::Inspector => centered(76, 16, frame.area()),
-        Overlay::Help { .. } => centered(82, 20, frame.area()),
+        Overlay::Help { .. } => centered(88, 25, frame.area()),
         _ => centered(46, 13, frame.area()),
     };
     frame.render_widget(Clear, area);
@@ -673,13 +758,17 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 ),
                 (
                     "Browse",
-                    "/ search · ←/→ filters/tabs · a add to queue · q queue · d devices · i inspector",
+                    "/ search · f filter Library · ←/→ filters/tabs · a add to queue · q Queue · d devices · i inspector",
                 ),
                 (
                     "Mouse",
                     "Click selects · double-click activates · right-click actions · wheel scrolls hovered pane",
                 ),
-                ("Session", "? help · x or Ctrl-C quit"),
+                (
+                    "Help",
+                    "? opens Help · type to filter sections · Backspace edits · Enter stops editing · Esc closes",
+                ),
+                ("Session", "x · Shift+Q · Ctrl+C · Ctrl+Q quit from any screen"),
             ];
             let needle = query.to_lowercase();
             let lines = sections
@@ -798,7 +887,7 @@ mod tests {
 
     #[test]
     fn supported_sizes_render_without_panicking() {
-        for (width, height) in [(80, 24), (120, 35), (160, 45)] {
+        for (width, height) in [(80, 24), (120, 35), (140, 35), (160, 45)] {
             let output = draw(width, height);
             assert!(
                 output.contains("Mellowdeck")
@@ -821,6 +910,19 @@ mod tests {
         let mut hits = HitMap::default();
         terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
         assert!(hits.queue.is_some());
+    }
+
+    #[test]
+    fn queue_grows_with_a_wider_terminal() {
+        let queue_width = |width| {
+            let backend = TestBackend::new(width, 45);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut state = AppState::default();
+            let mut hits = HitMap::default();
+            terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+            hits.queue.unwrap().width
+        };
+        assert!(queue_width(160) > queue_width(140));
     }
 
     #[test]

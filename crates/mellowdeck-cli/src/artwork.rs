@@ -3,6 +3,7 @@ use std::{
     fmt,
     sync::mpsc::{self, Receiver, SyncSender},
     thread,
+    time::{Duration, Instant},
 };
 
 use image::DynamicImage;
@@ -37,7 +38,7 @@ pub struct ArtworkManager {
     cache: HashMap<String, DynamicImage>,
     order: VecDeque<String>,
     slots: HashMap<ArtworkPlacement, ImageSlot>,
-    failed: HashSet<String>,
+    failed: HashMap<String, Instant>,
 }
 
 struct ImageSlot {
@@ -115,7 +116,7 @@ impl ArtworkManager {
             cache: HashMap::new(),
             order: VecDeque::new(),
             slots,
-            failed: HashSet::new(),
+            failed: HashMap::new(),
         }
     }
 
@@ -164,7 +165,7 @@ impl ArtworkManager {
             if let Some(image) = self.cache.get(url) {
                 slot.protocol.replace_protocol(self.picker.new_resize_protocol(image.clone()));
             } else if !self.pending.contains(url)
-                && !self.failed.contains(url)
+                && self.failed.get(url).is_none_or(|retry| Instant::now() >= *retry)
                 && self.fetch.try_send(url.to_owned()).is_ok()
             {
                 self.pending.insert(url.to_owned());
@@ -201,13 +202,14 @@ impl ArtworkManager {
                         .values_mut()
                         .filter(|slot| slot.current.as_deref() == Some(downloaded.url.as_str()))
                     {
+                        self.failed.remove(&downloaded.url);
                         slot.protocol
                             .replace_protocol(self.picker.new_resize_protocol(image.clone()));
                     }
                     self.cache.insert(downloaded.url, image);
                 }
                 Err(_) => {
-                    self.failed.insert(downloaded.url);
+                    self.failed.insert(downloaded.url, Instant::now() + Duration::from_secs(10));
                 }
             }
         }

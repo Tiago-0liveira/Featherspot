@@ -41,7 +41,7 @@ struct Session {
 
 impl Session {
     fn load() -> Result<Self> {
-        let paths = app_paths();
+        let paths = AppPaths::discover()?;
         let settings = JsonSettingsStore::new(paths.settings);
         let saved = settings.load()?;
         Ok(Self {
@@ -196,7 +196,8 @@ fn run() -> Result<()> {
     let mut saved = session.settings.load()?;
     saved.cli = Some(settings);
     session.settings.save(&saved)?;
-    local_player.shutdown()?;
+    // Do not wait for the player-host process: terminal restoration must never depend on it.
+    let _ = local_player.send(LocalPlayerCommand::Shutdown);
     Ok(())
 }
 
@@ -306,6 +307,7 @@ fn handle_response(
                 available_actions: playback.actions,
                 observed_at: Some(Instant::now()),
             };
+            select_automatic_device(state);
         }
         ServiceResponse::Queue { now, upcoming } => {
             state.queue_now = now;
@@ -408,9 +410,7 @@ fn handle_local_player_events(
             LocalPlayerEvent::Ready { device_id } => {
                 let device_id = device_id.to_string();
                 state.local_device_id = Some(device_id.clone());
-                if state.selected_device_id.is_none() {
-                    state.selected_device_id = Some(device_id);
-                }
+                select_automatic_device(state);
                 state.notice = Some(Notice {
                     kind: NoticeKind::Success,
                     text: "Local playback engine is ready on this device.".into(),
@@ -454,6 +454,75 @@ fn handle_local_player_events(
 fn local_player_selected(state: &AppState) -> bool {
     state.local_device_id.is_some()
         && state.local_device_id.as_deref() == state.selected_device_id.as_deref()
+}
+
+/// Re-evaluate after either playback or local-player readiness arrives so their arrival order
+/// cannot change the chosen device. Active remote playback wins over local idle playback.
+fn select_automatic_device(state: &mut AppState) {
+    if state.device_selected_by_user {
+        return;
+    }
+    if state.playback.playing
+        && let Some(device_id) = state.playback.device_id.clone()
+        && state.local_device_id.as_deref() != Some(device_id.as_str())
+    {
+        state.selected_device_id = Some(device_id);
+    } else if let Some(device_id) = state.local_device_id.clone() {
+        state.selected_device_id = Some(device_id);
+    }
+}
+
+#[cfg(test)]
+mod device_selection_tests {
+    use super::*;
+
+    fn local_ready(state: &mut AppState, id: &str) {
+        state.local_device_id = Some(id.into());
+        select_automatic_device(state);
+    }
+    fn playback(state: &mut AppState, id: &str, playing: bool) {
+        state.playback.device_id = Some(id.into());
+        state.playback.playing = playing;
+        select_automatic_device(state);
+    }
+
+    #[test]
+    fn selects_local_when_ready_arrives_first() {
+        let mut state = AppState::default();
+        local_ready(&mut state, "local");
+        playback(&mut state, "remote", false);
+        assert_eq!(state.selected_device_id.as_deref(), Some("local"));
+    }
+    #[test]
+    fn selects_local_when_playback_arrives_first() {
+        let mut state = AppState::default();
+        playback(&mut state, "remote", false);
+        local_ready(&mut state, "local");
+        assert_eq!(state.selected_device_id.as_deref(), Some("local"));
+    }
+    #[test]
+    fn preserves_a_playing_remote_device() {
+        let mut state = AppState::default();
+        playback(&mut state, "remote", true);
+        local_ready(&mut state, "local");
+        assert_eq!(state.selected_device_id.as_deref(), Some("remote"));
+    }
+    #[test]
+    fn selects_local_when_remote_playback_is_paused() {
+        let mut state = AppState::default();
+        playback(&mut state, "remote", false);
+        local_ready(&mut state, "local");
+        assert_eq!(state.selected_device_id.as_deref(), Some("local"));
+    }
+    #[test]
+    fn preserves_a_manually_selected_device() {
+        let mut state = AppState::default();
+        state.selected_device_id = Some("manual".into());
+        state.device_selected_by_user = true;
+        playback(&mut state, "remote", true);
+        local_ready(&mut state, "local");
+        assert_eq!(state.selected_device_id.as_deref(), Some("manual"));
+    }
 }
 
 fn send_local_command(
@@ -537,6 +606,7 @@ fn actionable(error: &AppError) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn app_paths() -> AppPaths {
     let root = env::var_os("LOCALAPPDATA")
         .map_or_else(|| PathBuf::from("."), PathBuf::from)

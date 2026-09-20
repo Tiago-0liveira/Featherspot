@@ -239,6 +239,29 @@ fn local_command_json(command: LocalPlayerCommand) -> String {
 }
 
 impl AppPaths {
+    /// Discovers the per-user application locations. Composition roots should use
+    /// this instead of reading platform environment variables themselves.
+    pub fn discover() -> Result<Self> {
+        #[cfg(target_os = "windows")]
+        let root =
+            std::env::var_os("LOCALAPPDATA").map(PathBuf::from).map(|path| path.join("Mellowdeck"));
+        #[cfg(target_os = "macos")]
+        let root = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library").join("Application Support").join("Mellowdeck"));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let root = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
+            .map(|path| path.join("mellowdeck"));
+        root.map_or_else(
+            || Err(AppError::new(ErrorKind::Storage, "could not discover a user data directory")),
+            |root| Ok(Self::under(root)),
+        )
+    }
+
     pub fn under(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         Self {

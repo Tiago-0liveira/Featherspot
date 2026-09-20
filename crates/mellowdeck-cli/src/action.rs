@@ -63,6 +63,10 @@ pub enum Action {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HitTarget {
     Sidebar(usize),
+    TopNav(Route),
+    PlayerArtist { title: String, uri: String },
+    PlayerAlbum { title: String, uri: String },
+    PlayerDevice,
     MenuButton,
     ContentRow(usize),
     QueueRow(usize),
@@ -114,7 +118,11 @@ impl HitMap {
 }
 
 pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
-    let action = if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+    // Exit precedes text entry and overlays. Lower-case q remains the Queue shortcut.
+    let action = if matches!(key.code, KeyCode::Char('x') | KeyCode::Char('Q'))
+        || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::SHIFT))
+        || (matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q'))
+            && key.modifiers.contains(KeyModifiers::CONTROL))
     {
         Action::Quit
     } else if state.text_entry || matches!(state.overlay, Some(Overlay::Help { editing: true, .. }))
@@ -160,7 +168,6 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char('m') if state.layout == crate::state::LayoutMode::Compact => {
                 Action::OpenActions
             }
-            KeyCode::Char('x') => Action::Quit,
             _ => return Vec::new(),
         }
     };
@@ -200,12 +207,20 @@ pub fn dispatch_mouse(
             if let Some(target) = target.clone() {
                 hits.last_click = Some((target, now));
             }
-            let direct = match target {
+            let direct = match target.clone() {
                 Some(HitTarget::MenuButton) => {
                     state.overlay = Some(Overlay::Menu);
                     return Vec::new();
                 }
                 Some(HitTarget::PlayerToggle) => Some(Action::TogglePlayback),
+                Some(HitTarget::TopNav(route)) => Some(Action::Navigate(route)),
+                Some(HitTarget::PlayerArtist { title, uri }) => {
+                    Some(Action::Navigate(Route::Artist { title, uri }))
+                }
+                Some(HitTarget::PlayerAlbum { title, uri }) => {
+                    Some(Action::Navigate(Route::Album { title, uri }))
+                }
+                Some(HitTarget::PlayerDevice) => Some(Action::Navigate(Route::Devices)),
                 Some(HitTarget::PlayerPrevious) => Some(Action::Previous),
                 Some(HitTarget::PlayerNext) => Some(Action::Next),
                 Some(HitTarget::PlayerProgress) => {
@@ -453,7 +468,7 @@ fn move_selection(state: &mut AppState, delta: isize) {
             state.page.cursor.move_by(delta, len, state.content_height);
         }
         FocusRegion::Queue => {
-            state.queue.move_by(delta, state.queue_upcoming.len(), state.content_height);
+            state.queue.move_by(delta, state.queue_upcoming.len(), state.queue_height);
         }
         FocusRegion::Player => {}
     }
@@ -461,13 +476,13 @@ fn move_selection(state: &mut AppState, delta: isize) {
 
 fn move_to_edge(state: &mut AppState, end: bool) {
     let content_len = state.page.flattened().len();
-    let (cursor, len) = match state.focus {
-        FocusRegion::Sidebar => (&mut state.sidebar, AppState::NAVIGATION.len()),
-        FocusRegion::Queue => (&mut state.queue, state.queue_upcoming.len()),
-        FocusRegion::Content => (&mut state.page.cursor, content_len),
+    let (cursor, len, height) = match state.focus {
+        FocusRegion::Sidebar => (&mut state.sidebar, AppState::NAVIGATION.len(), 6),
+        FocusRegion::Queue => (&mut state.queue, state.queue_upcoming.len(), state.queue_height),
+        FocusRegion::Content => (&mut state.page.cursor, content_len, state.content_height),
         FocusRegion::Player => return,
     };
-    cursor.move_to(if end { len.saturating_sub(1) } else { 0 }, len, state.content_height);
+    cursor.move_to(if end { len.saturating_sub(1) } else { 0 }, len, height);
 }
 
 fn cycle_local(state: &mut AppState, right: bool) {
@@ -550,6 +565,7 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
             } else {
                 item.uri.map_or_else(Vec::new, |id| {
                     state.selected_device_id = Some(id.clone());
+                    state.device_selected_by_user = true;
                     vec![Effect::Transfer(id)]
                 })
             }
@@ -716,6 +732,31 @@ mod tests {
         let effects = dispatch_key(&mut state, key(KeyCode::Char(' ')));
         assert!(effects.is_empty());
         assert_eq!(state.search_query, " ");
+    }
+
+    #[test]
+    fn quit_shortcuts_are_global_without_claiming_lowercase_queue() {
+        for (key_event, text_entry, overlay) in [
+            (key(KeyCode::Char('x')), false, None),
+            (key(KeyCode::Char('Q')), false, Some(Overlay::Inspector)),
+            (KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), true, None),
+            (
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                false,
+                Some(Overlay::Help { query: String::new(), editing: true }),
+            ),
+        ] {
+            let mut state = AppState::default();
+            state.text_entry = text_entry;
+            state.overlay = overlay;
+            dispatch_key(&mut state, key_event);
+            assert!(state.quit);
+        }
+
+        let mut state = AppState::default();
+        dispatch_key(&mut state, key(KeyCode::Char('q')));
+        assert_eq!(state.page.route, Route::Queue);
+        assert!(!state.quit);
     }
 
     #[test]

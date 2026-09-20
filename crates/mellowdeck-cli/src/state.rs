@@ -357,6 +357,8 @@ pub struct AppState {
     pub history: Vec<PageState>,
     pub focus: FocusRegion,
     pub sidebar: ListCursor,
+    /// Primary section retained while browsing a detail page for top-bar highlighting.
+    pub primary_section: Route,
     pub queue: ListCursor,
     pub queue_now: Option<BrowseItem>,
     pub queue_upcoming: Vec<BrowseItem>,
@@ -367,6 +369,8 @@ pub struct AppState {
     pub search_query: String,
     pub layout: LayoutMode,
     pub content_height: usize,
+    /// Number of visible upcoming-queue rows in the rendered queue panel.
+    pub queue_height: usize,
     pub generation: u64,
     pub notice: Option<Notice>,
     pub quit: bool,
@@ -376,6 +380,8 @@ pub struct AppState {
     /// Device registered by the local Web Playback SDK host, when available.
     pub local_device_id: Option<String>,
     pub selected_device_id: Option<String>,
+    /// A device chosen from the Devices page must not be replaced automatically.
+    pub device_selected_by_user: bool,
     pub response_log: VecDeque<u64>,
 }
 
@@ -386,6 +392,7 @@ impl Default for AppState {
             history: Vec::new(),
             focus: FocusRegion::Content,
             sidebar: ListCursor::default(),
+            primary_section: Route::Home,
             queue: ListCursor::default(),
             queue_now: None,
             queue_upcoming: Vec::new(),
@@ -396,6 +403,7 @@ impl Default for AppState {
             search_query: String::new(),
             layout: LayoutMode::Standard,
             content_height: 10,
+            queue_height: 1,
             generation: 0,
             notice: None,
             quit: false,
@@ -404,6 +412,7 @@ impl Default for AppState {
             wide_queue: true,
             local_device_id: None,
             selected_device_id: None,
+            device_selected_by_user: false,
             response_log: VecDeque::new(),
         }
     }
@@ -426,6 +435,9 @@ impl AppState {
     }
     pub fn navigate(&mut self, route: Route) -> u64 {
         if self.page.route != route {
+            if matches!(route, Route::Home | Route::Search | Route::Library | Route::Settings) {
+                self.primary_section = route.clone();
+            }
             self.history.push(self.page.clone());
         }
         self.generation = self.generation.saturating_add(1);

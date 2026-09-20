@@ -2,6 +2,7 @@
 
 pub mod action;
 pub mod artwork;
+pub mod format;
 pub mod render;
 pub mod service;
 pub mod state;
