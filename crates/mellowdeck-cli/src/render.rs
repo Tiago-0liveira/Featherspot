@@ -57,7 +57,7 @@ fn render_inner(
     }
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(10), Constraint::Length(9)])
+        .constraints([Constraint::Length(2), Constraint::Min(10), Constraint::Length(11)])
         .split(area);
     let body = vertical[1];
     render_topbar(frame, vertical[0], state, hits);
@@ -538,159 +538,274 @@ fn render_player(
     hits: &mut HitMap,
     artwork: Option<&mut ArtworkManager>,
 ) {
-    let progress = state.playback.progress_at(Instant::now());
-    let status = if state.playback.playing { "❚❚" } else { "▶" };
-    let title =
-        if state.playback.title.is_empty() { "Nothing playing" } else { &state.playback.title };
-    let album = if state.playback.album.is_empty() {
-        String::new()
-    } else {
-        format!(" · {}", state.playback.album)
-    };
-    let inner = Block::default().borders(Borders::ALL).inner(area);
-    let art_area = Rect { width: 12, height: inner.height, ..inner };
     frame.render_widget(focus_block(" Player ", state.focus == FocusRegion::Player), area);
-    let cells = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(12),
-            Constraint::Length(1),
-            Constraint::Min(12),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(5),
-            Constraint::Min(10),
-            Constraint::Length(5),
-            Constraint::Length(8),
-        ])
-        .split(Rect { height: 1, ..inner });
-    let metadata = Line::from(vec![
-        Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" · {}{album}", state.playback.artist), Style::default().fg(MUTED)),
-    ]);
-    frame.render_widget(Paragraph::new(metadata).wrap(Wrap { trim: true }), cells[2]);
-    // Directional transport buttons are deliberately high-contrast terminal "circles".
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            " ◀ ",
-            Style::default().fg(INK).bg(PEACH).add_modifier(Modifier::BOLD),
-        )),
-        cells[3],
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!("{status:^3}"),
-            Style::default().fg(INK).bg(SAGE).add_modifier(Modifier::BOLD),
-        )),
-        cells[4],
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            " ▶ ",
-            Style::default().fg(INK).bg(PEACH).add_modifier(Modifier::BOLD),
-        )),
-        cells[5],
-    );
-    frame.render_widget(
-        Paragraph::new(clock(progress)).style(Style::default().fg(LAVENDER)),
-        cells[6],
-    );
-    let bar_width = usize::from(cells[7].width);
-    let filled = if state.playback.duration_ms == 0 {
-        0
-    } else {
-        usize::try_from(progress.saturating_mul(bar_width as u64) / state.playback.duration_ms)
-            .unwrap_or_default()
-            .min(bar_width)
-    };
-    frame.render_widget(
-        Paragraph::new(format!("{}{}", "━".repeat(filled), "─".repeat(bar_width - filled)))
-            .style(Style::default().fg(LAVENDER)),
-        cells[7],
-    );
-    frame.render_widget(
-        Paragraph::new(clock(state.playback.duration_ms)).style(Style::default().fg(LAVENDER)),
-        cells[8],
-    );
-    frame.render_widget(
-        Paragraph::new(format!("Vol {}%", state.playback.volume))
-            .style(Style::default().fg(LAVENDER)),
-        cells[9],
-    );
-    let metadata_area = Rect {
-        x: inner.x.saturating_add(13),
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let progress = state.playback.progress_at(Instant::now());
+    let art_height = inner.height.saturating_sub(1);
+    let art_area = Rect { width: inner.width.min(12), height: art_height, ..inner };
+    let controls = Rect {
+        x: inner.x.saturating_add(13).min(inner.x.saturating_add(inner.width)),
+        y: inner.y,
         width: inner.width.saturating_sub(13),
-        height: 1,
-        ..inner
+        height: inner.height,
     };
-    if inner.height > 1 {
-        let artist_area = Rect { y: inner.y + 1, ..metadata_area };
+    if controls.width > 0 {
+        let row = |offset| Rect { y: controls.y.saturating_add(offset), height: 1, ..controls };
+        let title =
+            if state.playback.title.is_empty() { "Nothing playing" } else { &state.playback.title };
         frame.render_widget(
-            Paragraph::new(state.playback.artist.as_str()).style(Style::default().fg(LAVENDER)),
-            artist_area,
+            Paragraph::new(truncate_cells(title, controls.width))
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+            row(0),
         );
-        let mut artist_x = artist_area.x;
-        for (title, uri) in &state.playback.artists {
-            let width = u16::try_from(title.chars().count()).unwrap_or(u16::MAX);
-            if let Some(uri) = uri {
+        if controls.height > 1 {
+            let artist_area = row(1);
+            frame.render_widget(
+                Paragraph::new(truncate_cells(&state.playback.artist, controls.width))
+                    .style(Style::default().fg(LAVENDER)),
+                artist_area,
+            );
+            let mut artist_x = artist_area.x;
+            for (name, uri) in &state.playback.artists {
+                let width = cell_width(name)
+                    .min(artist_area.x.saturating_add(artist_area.width).saturating_sub(artist_x));
+                if width > 0
+                    && let Some(uri) = uri
+                {
+                    hits.add(
+                        Rect { x: artist_x, width, ..artist_area },
+                        HitTarget::PlayerArtist { title: name.clone(), uri: uri.clone() },
+                    );
+                }
+                artist_x = artist_x.saturating_add(cell_width(name).saturating_add(2));
+            }
+        }
+        if controls.height > 2 {
+            let album_area = row(2);
+            frame.render_widget(
+                Paragraph::new(truncate_cells(&state.playback.album, controls.width))
+                    .style(Style::default().fg(PEACH)),
+                album_area,
+            );
+            if let Some(uri) = &state.playback.album_uri {
+                let width = cell_width(&state.playback.album).min(album_area.width);
+                if width > 0 {
+                    hits.add(
+                        Rect { width, ..album_area },
+                        HitTarget::PlayerAlbum {
+                            title: state.playback.album.clone(),
+                            uri: uri.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        if controls.height > 3 {
+            let transport = row(3);
+            let start = transport.x.saturating_add(transport.width.saturating_sub(11) / 2);
+            let previous = Rect { x: start, width: 3, ..transport };
+            let toggle = Rect { x: start.saturating_add(4), width: 3, ..transport };
+            let next = Rect { x: start.saturating_add(8), width: 3, ..transport };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    " ◀ ",
+                    Style::default().fg(INK).bg(PEACH).add_modifier(Modifier::BOLD),
+                )),
+                previous,
+            );
+            let icon = if state.playback.playing { " ❚❚" } else { " ▶ " };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    icon,
+                    Style::default().fg(INK).bg(SAGE).add_modifier(Modifier::BOLD),
+                )),
+                toggle,
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    " ▶ ",
+                    Style::default().fg(INK).bg(PEACH).add_modifier(Modifier::BOLD),
+                )),
+                next,
+            );
+            hits.add(previous, HitTarget::PlayerPrevious);
+            hits.add(toggle, HitTarget::PlayerToggle);
+            hits.add(next, HitTarget::PlayerNext);
+        }
+        if controls.height > 4 {
+            let progress_row = row(4);
+            let left = clock(progress);
+            let right = clock(state.playback.duration_ms);
+            let left_width = cell_width(&left).min(progress_row.width);
+            let right_width = cell_width(&right).min(progress_row.width.saturating_sub(left_width));
+            let bar = Rect {
+                x: progress_row.x.saturating_add(left_width.saturating_add(1)),
+                width: progress_row
+                    .width
+                    .saturating_sub(left_width.saturating_add(right_width).saturating_add(2)),
+                ..progress_row
+            };
+            frame.render_widget(
+                Paragraph::new(left).style(Style::default().fg(LAVENDER)),
+                Rect { width: left_width, ..progress_row },
+            );
+            frame.render_widget(
+                Paragraph::new(right)
+                    .alignment(Alignment::Right)
+                    .style(Style::default().fg(LAVENDER)),
+                Rect {
+                    x: progress_row
+                        .x
+                        .saturating_add(progress_row.width.saturating_sub(right_width)),
+                    width: right_width,
+                    ..progress_row
+                },
+            );
+            if bar.width > 0 {
+                let filled = if state.playback.duration_ms == 0 {
+                    0
+                } else {
+                    usize::try_from(
+                        progress.saturating_mul(u64::from(bar.width)) / state.playback.duration_ms,
+                    )
+                    .unwrap_or(0)
+                    .min(usize::from(bar.width))
+                };
+                frame.render_widget(
+                    Paragraph::new(format!(
+                        "{}{}",
+                        "━".repeat(filled),
+                        "─".repeat(usize::from(bar.width) - filled)
+                    ))
+                    .style(Style::default().fg(LAVENDER)),
+                    bar,
+                );
+                hits.add(bar, HitTarget::PlayerProgress);
+            }
+        }
+        if controls.height > 5 {
+            let modes = row(5);
+            let shuffle =
+                format!("[Shuffle: {}]", if state.playback.shuffle { "on" } else { "off" });
+            let repeat = format!(
+                "[Repeat: {}]",
+                ["off", "context", "track"][usize::from(state.playback.repeat.min(2))]
+            );
+            let shuffle_width = cell_width(&shuffle).min(modes.width);
+            let repeat_x = modes.x.saturating_add(shuffle_width.saturating_add(1));
+            let repeat_width = cell_width(&repeat)
+                .min(modes.x.saturating_add(modes.width).saturating_sub(repeat_x));
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    &shuffle,
+                    Style::default().fg(if state.playback.shuffle { SAGE } else { MUTED }),
+                )),
+                Rect { width: shuffle_width, ..modes },
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    &repeat,
+                    Style::default().fg(if state.playback.repeat == 0 { MUTED } else { LAVENDER }),
+                )),
+                Rect { x: repeat_x, width: repeat_width, ..modes },
+            );
+            if shuffle_width > 0 {
+                hits.add(Rect { width: shuffle_width, ..modes }, HitTarget::PlayerShuffle);
+            }
+            if repeat_width > 0 {
                 hits.add(
-                    Rect { x: artist_x, width, ..artist_area },
-                    HitTarget::PlayerArtist { title: title.clone(), uri: uri.clone() },
+                    Rect { x: repeat_x, width: repeat_width, ..modes },
+                    HitTarget::PlayerRepeat,
                 );
             }
-            artist_x = artist_x.saturating_add(width.saturating_add(2));
         }
-    }
-    if inner.height > 2 {
-        let album_area = Rect { y: inner.y + 2, ..metadata_area };
-        frame.render_widget(
-            Paragraph::new(state.playback.album.as_str()).style(Style::default().fg(PEACH)),
-            album_area,
-        );
-        if let Some(uri) = &state.playback.album_uri {
-            hits.add(
-                Rect { width: state.playback.album.chars().count() as u16, ..album_area },
-                HitTarget::PlayerAlbum { title: state.playback.album.clone(), uri: uri.clone() },
+        if controls.height > 6 {
+            let volume = row(6);
+            let label = "Vol ";
+            let suffix = format!(" {}%", state.playback.volume);
+            let meter = Rect {
+                x: volume.x.saturating_add(cell_width(label)),
+                width: volume
+                    .width
+                    .saturating_sub(cell_width(label).saturating_add(cell_width(&suffix))),
+                ..volume
+            };
+            frame.render_widget(
+                Paragraph::new(label).style(Style::default().fg(MUTED)),
+                Rect { width: cell_width(label).min(volume.width), ..volume },
             );
+            frame.render_widget(
+                Paragraph::new(suffix.clone())
+                    .alignment(Alignment::Right)
+                    .style(Style::default().fg(LAVENDER)),
+                Rect {
+                    x: volume.x.saturating_add(volume.width.saturating_sub(cell_width(&suffix))),
+                    width: cell_width(&suffix).min(volume.width),
+                    ..volume
+                },
+            );
+            if meter.width > 0 {
+                let filled = usize::from(meter.width) * usize::from(state.playback.volume) / 100;
+                frame.render_widget(
+                    Paragraph::new(format!(
+                        "{}{}",
+                        "━".repeat(filled),
+                        "─".repeat(usize::from(meter.width) - filled)
+                    ))
+                    .style(Style::default().fg(LAVENDER)),
+                    meter,
+                );
+                hits.add(meter, HitTarget::PlayerVolume);
+            }
         }
     }
-    if inner.height > 3 {
-        let device = state.playback.device_name.as_deref().unwrap_or("choose with d");
-        let status = state.notice.as_ref().map_or("Ready", |notice| notice.text.as_str());
-        let shuffle = if state.playback.shuffle { "on" } else { "off" };
-        let repeat = ["off", "context", "track"][usize::from(state.playback.repeat)];
-        let line = Line::from(vec![
-            Span::styled(format!("Device: {device}  "), Style::default().fg(MUTED)),
-            Span::styled("Shuffle: ", Style::default().fg(MUTED)),
-            Span::styled(
-                shuffle,
-                Style::default().fg(if state.playback.shuffle { SAGE } else { MUTED }),
-            ),
-            Span::styled("  Repeat: ", Style::default().fg(MUTED)),
-            Span::styled(
-                repeat,
-                Style::default().fg(if state.playback.repeat == 0 { MUTED } else { LAVENDER }),
-            ),
-            Span::styled(format!("  {status}  ? Help"), Style::default().fg(MUTED)),
-        ]);
-        let status_area = Rect { y: inner.y + 3, ..metadata_area };
-        frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), status_area);
-        hits.add(
-            Rect {
-                width: u16::try_from(device.chars().count() + 8).unwrap_or(u16::MAX),
-                ..status_area
-            },
-            HitTarget::PlayerDevice,
-        );
-        hits.add(
-            Rect {
-                x: status_area.x.saturating_add(status_area.width.saturating_sub(7)),
-                width: 7,
-                ..status_area
-            },
-            HitTarget::Help,
-        );
+    let status_row =
+        Rect { y: inner.y.saturating_add(inner.height.saturating_sub(1)), height: 1, ..inner };
+    let help = "? Help";
+    let device_name = state.playback.device_name.as_deref().unwrap_or("choose with d");
+    let prefix = "Device: ";
+    let separator = "  ·  ";
+    let device_max = status_row.width.saturating_sub(
+        cell_width(prefix).saturating_add(cell_width(separator)).saturating_add(cell_width(help)),
+    );
+    let shown_device = truncate_cells(device_name, device_max);
+    let device_text = format!("{prefix}{shown_device}");
+    let group_width = cell_width(&device_text)
+        .saturating_add(cell_width(separator))
+        .saturating_add(cell_width(help))
+        .min(status_row.width);
+    let group_x = status_row.x.saturating_add(status_row.width.saturating_sub(group_width));
+    let device_rect =
+        Rect { x: group_x, width: cell_width(&device_text).min(status_row.width), ..status_row };
+    let help_rect = Rect {
+        x: status_row.x.saturating_add(status_row.width.saturating_sub(cell_width(help))),
+        width: cell_width(help).min(status_row.width),
+        ..status_row
+    };
+    let notice_width = group_x.saturating_sub(status_row.x).saturating_sub(1);
+    let notice = state.notice.as_ref().map_or("Ready", |notice| notice.text.as_str());
+    let notice_style = state.notice.as_ref().map_or(Style::default().fg(MUTED), |notice| {
+        Style::default().fg(match notice.kind {
+            crate::state::NoticeKind::Success => SAGE,
+            crate::state::NoticeKind::Pending => LAVENDER,
+            crate::state::NoticeKind::Error => PEACH,
+            crate::state::NoticeKind::Info => MUTED,
+        })
+    });
+    frame.render_widget(
+        Paragraph::new(truncate_cells(notice, notice_width)).style(notice_style),
+        Rect { width: notice_width, ..status_row },
+    );
+    frame.render_widget(Paragraph::new(device_text).style(Style::default().fg(MUTED)), device_rect);
+    frame.render_widget(Paragraph::new(help).style(Style::default().fg(MUTED)), help_rect);
+    if device_rect.width > 0 {
+        hits.add(device_rect, HitTarget::PlayerDevice);
+    }
+    if help_rect.width > 0 {
+        hits.add(help_rect, HitTarget::Help);
     }
     if let Some(artwork) = artwork {
         artwork.render(
@@ -706,11 +821,21 @@ fn render_player(
             art_area,
         );
     }
-    hits.add(cells[3], HitTarget::PlayerPrevious);
-    hits.add(cells[4], HitTarget::PlayerToggle);
-    hits.add(cells[5], HitTarget::PlayerNext);
-    hits.add(cells[7], HitTarget::PlayerProgress);
-    hits.add(cells[9], HitTarget::PlayerVolume);
+}
+
+fn cell_width(value: &str) -> u16 {
+    u16::try_from(value.chars().count()).unwrap_or(u16::MAX)
+}
+fn truncate_cells(value: &str, width: u16) -> String {
+    let count = usize::from(width);
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= count {
+        return value.into();
+    }
+    if count <= 1 {
+        return "…".chars().take(count).collect();
+    }
+    chars.into_iter().take(count - 1).collect::<String>() + "…"
 }
 #[allow(clippy::too_many_lines)]
 fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
@@ -867,6 +992,34 @@ fn clock(milliseconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn player_regions_are_distinct_and_metadata_is_not_duplicated() {
+        let backend = TestBackend::new(120, 35);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.playback.title = "Title only".into();
+        state.playback.artist = "Artist alone".into();
+        state.playback.album = "Album alone".into();
+        state.playback.duration_ms = 143_000;
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+        let title_row = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .skip(25_usize * 120)
+            .take(120)
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(title_row.contains("Title only"));
+        assert!(!title_row.contains("Artist alone") && !title_row.contains("Album alone"));
+        let progress = hits.rect_for(&HitTarget::PlayerProgress).unwrap();
+        let volume = hits.rect_for(&HitTarget::PlayerVolume).unwrap();
+        assert_ne!(progress.y, volume.y);
+        assert_ne!(hits.rect_for(&HitTarget::PlayerDevice), hits.rect_for(&HitTarget::Help));
+    }
+
     use ratatui::{Terminal, backend::TestBackend};
 
     fn draw(width: u16, height: u16) -> String {

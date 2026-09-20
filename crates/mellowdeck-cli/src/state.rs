@@ -312,6 +312,8 @@ pub struct PlaybackState {
     pub repeat: u8,
     pub available_actions: Vec<String>,
     pub observed_at: Option<Instant>,
+    /// Metadata restored from the CLI sidecar, rather than a live Spotify snapshot.
+    pub cached_track: bool,
 }
 
 impl PlaybackState {

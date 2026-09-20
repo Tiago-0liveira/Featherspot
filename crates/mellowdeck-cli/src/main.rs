@@ -18,6 +18,7 @@ use mellowdeck_cli::{
     dispatch_key, dispatch_mouse,
     render::render_with_artwork,
     service::{ServiceHandle, ServiceResponse},
+    session_state::{CliSessionState, CliSessionStore, PersistedTrack},
 };
 use mellowdeck_core::{
     AppError, CliSettings, CredentialStore, ErrorKind, LocalPlayerCommand, LocalPlayerEvent, Result,
@@ -36,6 +37,7 @@ struct Session {
     client_id: Option<String>,
     credentials: Box<dyn CredentialStore>,
     auth: SpotifyAuthenticator,
+    cli_session: CliSessionStore,
     token: Option<TokenSet>,
 }
 
@@ -45,6 +47,7 @@ impl Session {
         let settings = JsonSettingsStore::new(paths.settings);
         let saved = settings.load()?;
         Ok(Self {
+            cli_session: CliSessionStore::new(&paths.data),
             settings,
             client_id: saved.client_id,
             credentials: credential_store()?,
@@ -122,12 +125,15 @@ fn run() -> Result<()> {
     let mut terminal = TerminalGuard::new()?;
     let saved = session.settings.load()?;
     let cli = saved.cli.unwrap_or_default();
+    let cached_session = session.cli_session.load();
     let mut state = AppState {
         artwork: cli.artwork,
         mouse: cli.mouse,
         wide_queue: cli.wide_queue,
+        playback: PlaybackState { volume: cached_session.volume, ..PlaybackState::default() },
         ..AppState::default()
     };
+    restore_cached_track(&mut state, cached_session.last_track);
     state.notice =
         Some(Notice { kind: NoticeKind::Success, text: format!("Signed in as {account}") });
     let mut artwork = ArtworkManager::new(state.artwork);
@@ -196,6 +202,7 @@ fn run() -> Result<()> {
     let mut saved = session.settings.load()?;
     saved.cli = Some(settings);
     session.settings.save(&saved)?;
+    let _ = session.cli_session.save(&session_snapshot(&state));
     // Do not wait for the player-host process: terminal restoration must never depend on it.
     let _ = local_player.send(LocalPlayerCommand::Shutdown);
     Ok(())
@@ -283,30 +290,34 @@ fn handle_response(
             }
         }
         ServiceResponse::Playback(playback) => {
-            state.playback = PlaybackState {
-                track_uri: playback.track_uri,
-                context_uri: playback.context_uri,
-                title: playback.title,
-                artist: playback.subtitle,
-                artists: playback.artists,
-                album: playback.album,
-                album_uri: playback.album_uri,
-                artwork_url: playback.artwork_url,
-                device_id: playback.device_id,
-                device_name: playback.device_name,
-                playing: playback.playing,
-                progress_ms: playback.progress_ms.min(playback.duration_ms),
-                duration_ms: playback.duration_ms,
-                volume: playback.volume_percent.unwrap_or(state.playback.volume),
-                shuffle: playback.shuffle,
-                repeat: match playback.repeat.as_str() {
-                    "context" => 1,
-                    "track" => 2,
-                    _ => 0,
-                },
-                available_actions: playback.actions,
-                observed_at: Some(Instant::now()),
-            };
+            if playback.track_uri.is_some() {
+                state.playback = PlaybackState {
+                    track_uri: playback.track_uri,
+                    context_uri: playback.context_uri,
+                    title: playback.title,
+                    artist: playback.subtitle,
+                    artists: playback.artists,
+                    album: playback.album,
+                    album_uri: playback.album_uri,
+                    artwork_url: playback.artwork_url,
+                    device_id: playback.device_id,
+                    device_name: playback.device_name,
+                    playing: playback.playing,
+                    progress_ms: playback.progress_ms.min(playback.duration_ms),
+                    duration_ms: playback.duration_ms,
+                    volume: playback.volume_percent.unwrap_or(state.playback.volume),
+                    shuffle: playback.shuffle,
+                    repeat: match playback.repeat.as_str() {
+                        "context" => 1,
+                        "track" => 2,
+                        _ => 0,
+                    },
+                    available_actions: playback.actions,
+                    observed_at: Some(Instant::now()),
+                    cached_track: false,
+                };
+                let _ = session.cli_session.save(&session_snapshot(state));
+            }
             select_automatic_device(state);
         }
         ServiceResponse::Queue { now, upcoming } => {
@@ -322,6 +333,9 @@ fn handle_response(
             Ok(()) => {
                 state.notice =
                     Some(Notice { kind: NoticeKind::Success, text: command_success(&effect) });
+                if matches!(effect, Effect::Volume(_)) {
+                    let _ = session.cli_session.save(&session_snapshot(state));
+                }
                 worker.send(Effect::RefreshPlayback)?;
                 if matches!(
                     effect,
@@ -410,6 +424,14 @@ fn handle_local_player_events(
             LocalPlayerEvent::Ready { device_id } => {
                 let device_id = device_id.to_string();
                 state.local_device_id = Some(device_id.clone());
+                select_automatic_device(state);
+                send_local_command(
+                    local_player,
+                    LocalPlayerCommand::Volume {
+                        value_milli: u16::from(state.playback.volume) * 10,
+                    },
+                    state,
+                );
                 select_automatic_device(state);
                 state.notice = Some(Notice {
                     kind: NoticeKind::Success,
@@ -525,6 +547,37 @@ mod device_selection_tests {
     }
 }
 
+fn restore_cached_track(state: &mut AppState, track: Option<PersistedTrack>) {
+    let Some(track) = track else { return };
+    state.playback.track_uri = Some(track.uri);
+    state.playback.title = track.title;
+    state.playback.artist = track.artist;
+    state.playback.artists = track.artists;
+    state.playback.album = track.album;
+    state.playback.album_uri = track.album_uri;
+    state.playback.artwork_url = track.artwork_url;
+    state.playback.duration_ms = track.duration_ms;
+    state.playback.playing = false;
+    state.playback.cached_track = true;
+}
+
+fn session_snapshot(state: &AppState) -> CliSessionState {
+    let playback = &state.playback;
+    let last_track =
+        playback.track_uri.as_ref().filter(|_| !playback.title.is_empty()).map(|uri| {
+            PersistedTrack {
+                uri: uri.clone(),
+                title: playback.title.clone(),
+                artist: playback.artist.clone(),
+                artists: playback.artists.clone(),
+                album: playback.album.clone(),
+                album_uri: playback.album_uri.clone(),
+                artwork_url: playback.artwork_url.clone(),
+                duration_ms: playback.duration_ms,
+            }
+        });
+    CliSessionState { schema_version: 1, volume: playback.volume.min(100), last_track }
+}
 fn send_local_command(
     local_player: &BackgroundLocalPlayer,
     command: LocalPlayerCommand,

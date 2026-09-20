@@ -76,6 +76,8 @@ pub enum HitTarget {
     PlayerNext,
     PlayerProgress,
     PlayerVolume,
+    PlayerShuffle,
+    PlayerRepeat,
     SearchField,
     Help,
 }
@@ -112,7 +114,7 @@ impl HitMap {
             .find(|hit| hit.rect.contains((column, row).into()))
             .map(|hit| hit.target.clone())
     }
-    fn rect_for(&self, target: &HitTarget) -> Option<Rect> {
+    pub(crate) fn rect_for(&self, target: &HitTarget) -> Option<Rect> {
         self.regions.iter().rev().find(|hit| &hit.target == target).map(|hit| hit.rect)
     }
 }
@@ -251,6 +253,8 @@ pub fn dispatch_mouse(
                             .saturating_sub(i8::try_from(state.playback.volume).unwrap_or(100)),
                     ))
                 }
+                Some(HitTarget::PlayerShuffle) => Some(Action::Shuffle),
+                Some(HitTarget::PlayerRepeat) => Some(Action::Repeat),
                 Some(HitTarget::SearchField) => Some(Action::StartSearch),
                 Some(HitTarget::Help) => Some(Action::ToggleHelp),
                 _ => None,
@@ -424,6 +428,11 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
                 state.back();
             }
             Vec::new()
+        }
+        Action::TogglePlayback if state.playback.cached_track && !state.playback.playing => {
+            state.playback.track_uri.clone().map_or_else(Vec::new, |uri| {
+                vec![Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() }]
+            })
         }
         Action::TogglePlayback => vec![Effect::TogglePlayback],
         Action::Previous => vec![Effect::Previous],
@@ -708,6 +717,33 @@ fn submit_text(state: &mut AppState) -> Vec<Effect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shuffle_and_repeat_mouse_targets_dispatch_only_inside_their_rectangles() {
+        let now = Instant::now();
+        let mut state = AppState::default();
+        let mut hits = HitMap::default();
+        hits.add(Rect { x: 4, y: 2, width: 12, height: 1 }, HitTarget::PlayerShuffle);
+        hits.add(Rect { x: 17, y: 2, width: 12, height: 1 }, HitTarget::PlayerRepeat);
+        let click = |column| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            dispatch_mouse(&mut state, &mut hits, click(5), now),
+            vec![Effect::Shuffle(true)]
+        );
+        assert_eq!(
+            dispatch_mouse(&mut state, &mut hits, click(18), now + Duration::from_secs(1)),
+            vec![Effect::Repeat(1)]
+        );
+        assert!(
+            dispatch_mouse(&mut state, &mut hits, click(16), now + Duration::from_secs(2))
+                .is_empty()
+        );
+    }
+
     use crate::{BrowseItem, ContextPosition, LoadState, PageState, Section};
     use crossterm::event::{KeyEvent, MouseEvent};
 
