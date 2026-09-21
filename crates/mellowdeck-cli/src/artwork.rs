@@ -80,6 +80,8 @@ impl ArtworkManager {
             .spawn(move || {
                 let client = reqwest::blocking::Client::builder()
                     .user_agent(concat!("Mellowdeck/", env!("CARGO_PKG_VERSION")))
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(Duration::from_secs(10))
                     .build();
                 while let Ok(url) = fetch_rx.recv() {
                     let result = client
