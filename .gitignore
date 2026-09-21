@@ -7,4 +7,5 @@
 *.db-wal
 settings.json
 /dist/
+/.worktrees/
 
