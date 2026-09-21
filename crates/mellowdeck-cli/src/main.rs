@@ -132,6 +132,10 @@ fn run() -> Result<()> {
         artwork: cli.artwork,
         mouse: cli.mouse,
         wide_queue: cli.wide_queue,
+        side_player_max_height: cli.side_player_max_height,
+        side_player_min_width: cli.side_player_min_width,
+        stacked_queue_min_height: cli.stacked_queue_min_height,
+        wide_breakpoint_width: cli.wide_breakpoint_width,
         playback: PlaybackState { volume: cached_session.volume, ..PlaybackState::default() },
         recent_searches: cached_session.recent_searches,
         ..AppState::default()
@@ -231,8 +235,15 @@ fn run() -> Result<()> {
         }
     }
     artwork.clear_placement();
-    let settings =
-        CliSettings { artwork: state.artwork, mouse: state.mouse, wide_queue: state.wide_queue };
+    let settings = CliSettings {
+        artwork: state.artwork,
+        mouse: state.mouse,
+        wide_queue: state.wide_queue,
+        side_player_max_height: state.side_player_max_height,
+        side_player_min_width: state.side_player_min_width,
+        stacked_queue_min_height: state.stacked_queue_min_height,
+        wide_breakpoint_width: state.wide_breakpoint_width,
+    };
     let mut saved = session.settings.load()?;
     saved.cli = Some(settings);
     session.settings.save(&saved)?;
@@ -385,10 +396,7 @@ fn handle_response(
                 {
                     tracing::warn!(%error, "failed to persist CLI session state");
                 }
-                if !matches!(
-                    effect,
-                    Effect::Shuffle(_) | Effect::Repeat(_) | Effect::Volume(_)
-                ) {
+                if !matches!(effect, Effect::Shuffle(_) | Effect::Repeat(_) | Effect::Volume(_)) {
                     worker.send(Effect::RefreshPlayback)?;
                 }
                 if matches!(
@@ -825,6 +833,26 @@ fn update_settings_rows(page: &mut mellowdeck_cli::PageState, state: &AppState) 
                 "Wide-screen queue: {}",
                 if state.wide_queue { "enabled" } else { "disabled" }
             ),
+            "side-player-height" => {
+                if state.side_player_max_height == 0 {
+                    "Side player max height: Disabled".into()
+                } else {
+                    format!("Side player max height: {} rows", state.side_player_max_height)
+                }
+            }
+            "side-player-width" => {
+                format!("Side player min width: {} cols", state.side_player_min_width)
+            }
+            "stacked-queue-height" => {
+                if state.stacked_queue_min_height > 500 {
+                    "Stacked queue min height: Disabled".into()
+                } else {
+                    format!("Stacked queue min height: {} rows", state.stacked_queue_min_height)
+                }
+            }
+            "wide-breakpoint" => {
+                format!("Wide layout min width: {} cols", state.wide_breakpoint_width)
+            }
             _ => item.title.clone(),
         };
     }
@@ -836,6 +864,10 @@ fn save_cli_settings(session: &Session, state: &AppState) -> Result<()> {
         artwork: state.artwork,
         mouse: state.mouse,
         wide_queue: state.wide_queue,
+        side_player_max_height: state.side_player_max_height,
+        side_player_min_width: state.side_player_min_width,
+        stacked_queue_min_height: state.stacked_queue_min_height,
+        wide_breakpoint_width: state.wide_breakpoint_width,
     });
     session.settings.save(&saved)
 }

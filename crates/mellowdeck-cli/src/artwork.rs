@@ -77,9 +77,8 @@ impl ArtworkManager {
         }
         let (fetch_tx, fetch_rx) = mpsc::sync_channel::<String>(64);
         let (download_tx, download_rx) = mpsc::sync_channel(64);
-        if let Err(error) = thread::Builder::new()
-            .name("mellowdeck-artwork".into())
-            .spawn(move || {
+        if let Err(error) =
+            thread::Builder::new().name("mellowdeck-artwork".into()).spawn(move || {
                 let client = reqwest::blocking::Client::builder()
                     .user_agent(concat!("Mellowdeck/", env!("CARGO_PKG_VERSION")))
                     .connect_timeout(Duration::from_secs(5))
@@ -259,13 +258,13 @@ impl ArtworkManager {
                     .filter(|slot| slot.current.as_deref() == Some(downloaded.url.as_str()))
                 {
                     self.failed.remove(&downloaded.url);
-                    slot.protocol
-                        .replace_protocol(self.picker.new_resize_protocol(image.clone()));
+                    slot.protocol.replace_protocol(self.picker.new_resize_protocol(image.clone()));
                     slot.has_image = true;
                 }
                 self.cache.insert(downloaded.url, image);
             } else {
-                self.failed.insert(downloaded.url.clone(), Instant::now() + Duration::from_secs(10));
+                self.failed
+                    .insert(downloaded.url.clone(), Instant::now() + Duration::from_secs(10));
                 for slot in self
                     .slots
                     .values_mut()
@@ -289,9 +288,8 @@ impl ArtworkManager {
 fn image_slot(placement: ArtworkPlacement) -> ImageSlot {
     let (resize_tx, resize_rx) = mpsc::channel::<ResizeRequest>();
     let (result_tx, result_rx) = mpsc::sync_channel(16);
-    if let Err(error) = thread::Builder::new()
-        .name(format!("mellowdeck-artwork-{placement:?}"))
-        .spawn(move || {
+    if let Err(error) =
+        thread::Builder::new().name(format!("mellowdeck-artwork-{placement:?}")).spawn(move || {
             while let Ok(request) = resize_rx.recv() {
                 if result_tx.send(request.resize_encode()).is_err() {
                     break;
