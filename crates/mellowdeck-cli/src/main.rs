@@ -202,7 +202,9 @@ fn run() -> Result<()> {
     let mut saved = session.settings.load()?;
     saved.cli = Some(settings);
     session.settings.save(&saved)?;
-    let _ = session.cli_session.save(&session_snapshot(&state));
+    if let Err(error) = session.cli_session.save(&session_snapshot(&state)) {
+        tracing::warn!(%error, "failed to persist CLI session state");
+    }
     // Do not wait for the player-host process: terminal restoration must never depend on it.
     let _ = local_player.send(LocalPlayerCommand::Shutdown);
     Ok(())
@@ -316,7 +318,9 @@ fn handle_response(
                     observed_at: Some(Instant::now()),
                     cached_track: false,
                 };
-                let _ = session.cli_session.save(&session_snapshot(state));
+                if let Err(error) = session.cli_session.save(&session_snapshot(state)) {
+                    tracing::warn!(%error, "failed to persist CLI session state");
+                }
             }
             select_automatic_device(state);
         }
@@ -334,7 +338,9 @@ fn handle_response(
                 state.notice =
                     Some(Notice { kind: NoticeKind::Success, text: command_success(&effect) });
                 if matches!(effect, Effect::Volume(_)) {
-                    let _ = session.cli_session.save(&session_snapshot(state));
+                    if let Err(error) = session.cli_session.save(&session_snapshot(state)) {
+                        tracing::warn!(%error, "failed to persist CLI session state");
+                    }
                 }
                 worker.send(Effect::RefreshPlayback)?;
                 if matches!(
