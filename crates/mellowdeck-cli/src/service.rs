@@ -398,45 +398,10 @@ fn apply_detail(page: &mut PageState, detail: SpotifyDetailPage) {
         mellowdeck_spotify::SpotifyDetailKind::Artist => "Songs (search-derived)",
         _ => "Tracks",
     };
+    page.uri = Some(detail.uri.clone());
+    page.external_url.clone_from(&detail.external_url);
     page.next_offset = detail.items.next_offset;
-    let mut actions = vec![BrowseItem {
-        id: "play-context".into(),
-        kind: EntityKind::Action,
-        title: format!("Play {}", detail.title),
-        subtitle: "Start this context".into(),
-        metadata: String::new(),
-        uri: Some(detail.uri.clone()),
-        external_url: None,
-        artwork_url: detail.artwork_url.clone(),
-        artists: Vec::new(),
-        album: None,
-        duration_ms: None,
-        available: true,
-        context: None,
-        restricted: false,
-    }];
-    if let Some(url) = detail.external_url.clone() {
-        actions.push(BrowseItem {
-            id: "open-external".into(),
-            kind: EntityKind::Action,
-            title: "Open in Spotify".into(),
-            subtitle: "View this item in Spotify".into(),
-            metadata: String::new(),
-            uri: None,
-            external_url: Some(url),
-            artwork_url: None,
-            artists: Vec::new(),
-            album: None,
-            duration_ms: None,
-            available: true,
-            context: None,
-            restricted: false,
-        });
-    }
-    page.sections = vec![
-        Section { title: "Actions".into(), items: actions },
-        typed_section(primary, detail.items.items, context.as_deref()),
-    ];
+    page.sections = vec![typed_section(primary, detail.items.items, context.as_deref())];
     if !detail.releases.is_empty() {
         page.sections.push(typed_section("Releases", detail.releases, None));
     }
@@ -597,5 +562,41 @@ mod tests {
                 _ => assert_eq!(mode, "off"),
             }
         }
+    }
+
+    #[test]
+    fn apply_detail_stores_context_metadata_and_omits_action_section() {
+        let mut page = PageState::loading(
+            Route::Album {
+                uri: "spotify:album:1".into(),
+                title: "OK Computer".into(),
+            },
+            1,
+        );
+        let detail = SpotifyDetailPage {
+            title: "OK Computer".into(),
+            kind: mellowdeck_spotify::SpotifyDetailKind::Album,
+            uri: "spotify:album:1".into(),
+            external_url: Some("https://open.spotify.com/album/1".into()),
+            artwork_url: None,
+            owner: Some("Radiohead".into()),
+            description: String::new(),
+            release: Some("1997".into()),
+            total: 12,
+            items: mellowdeck_spotify::SpotifyPage {
+                items: vec![],
+                offset: 0,
+                limit: 50,
+                total: 0,
+                next_offset: None,
+            },
+            releases: vec![],
+            state: SpotifyContentState::Available,
+        };
+        apply_detail(&mut page, detail);
+        assert_eq!(page.uri.as_deref(), Some("spotify:album:1"));
+        assert_eq!(page.external_url.as_deref(), Some("https://open.spotify.com/album/1"));
+        assert!(!page.sections.iter().any(|s| s.title == "Actions"));
+        assert_eq!(page.sections[0].title, "Tracks");
     }
 }
