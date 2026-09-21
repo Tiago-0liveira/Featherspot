@@ -67,7 +67,9 @@ impl JsonSettingsStore {
         }
         if let Err(error) = fs::rename(&temporary, &self.path) {
             if had_existing {
-                let _ = fs::rename(&backup, &self.path);
+                if let Err(rollback_error) = fs::rename(&backup, &self.path) {
+                    tracing::error!(%rollback_error, "failed to rollback settings from backup");
+                }
             }
             return Err(io_error(error));
         }
