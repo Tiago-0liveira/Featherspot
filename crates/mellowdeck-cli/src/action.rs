@@ -183,6 +183,7 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char('2') => Action::Navigate(Route::Search),
             KeyCode::Char('3') => Action::Navigate(Route::Library),
             KeyCode::Char('4') => Action::Navigate(Route::Settings),
+            KeyCode::Char('5' | 'q') => Action::Navigate(Route::Queue),
             KeyCode::Char('/') => Action::StartSearch,
             KeyCode::Char('f') if state.page.route == Route::Library => Action::StartFilter,
             KeyCode::Char(' ') => Action::TogglePlayback,
@@ -192,7 +193,6 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char('+' | '=') => Action::Volume(5),
             KeyCode::Char('s') => Action::Shuffle,
             KeyCode::Char('r') => Action::Repeat,
-            KeyCode::Char('q') => Action::Navigate(Route::Queue),
             KeyCode::Char('d') => Action::Navigate(Route::Devices),
             KeyCode::Char('a') => Action::Enqueue,
             KeyCode::Char('?') => Action::ToggleHelp,
@@ -739,8 +739,41 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
         }
         "mouse" => state.mouse = !state.mouse,
         "wide-queue" => state.wide_queue = !state.wide_queue,
+        "side-player-height" => {
+            const VALUES: &[u16] = &[28, 30, 32, 0, 24, 26];
+            let next_idx = VALUES
+                .iter()
+                .position(|&v| v == state.side_player_max_height)
+                .map_or(0, |idx| (idx + 1) % VALUES.len());
+            state.side_player_max_height = VALUES[next_idx];
+        }
+        "side-player-width" => {
+            const VALUES: &[u16] = &[100, 110, 120, 80, 90];
+            let next_idx = VALUES
+                .iter()
+                .position(|&v| v == state.side_player_min_width)
+                .map_or(0, |idx| (idx + 1) % VALUES.len());
+            state.side_player_min_width = VALUES[next_idx];
+        }
+        "stacked-queue-height" => {
+            const VALUES: &[u16] = &[38, 42, 46, 999, 34];
+            let next_idx = VALUES
+                .iter()
+                .position(|&v| v == state.stacked_queue_min_height)
+                .map_or(0, |idx| (idx + 1) % VALUES.len());
+            state.stacked_queue_min_height = VALUES[next_idx];
+        }
+        "wide-breakpoint" => {
+            const VALUES: &[u16] = &[140, 150, 160, 120, 130];
+            let next_idx = VALUES
+                .iter()
+                .position(|&v| v == state.wide_breakpoint_width)
+                .map_or(0, |idx| (idx + 1) % VALUES.len());
+            state.wide_breakpoint_width = VALUES[next_idx];
+        }
         _ => return Vec::new(),
     }
+    state.update_layout(state.terminal_size.0, state.terminal_size.1);
     if let Some(item) = state
         .page
         .sections
@@ -755,8 +788,31 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
                 "Wide-screen queue: {}",
                 if state.wide_queue { "enabled" } else { "disabled" }
             ),
+            "side-player-height" => {
+                if state.side_player_max_height == 0 {
+                    "Side player max height: Disabled".into()
+                } else {
+                    format!("Side player max height: {} rows", state.side_player_max_height)
+                }
+            }
+            "side-player-width" => {
+                format!("Side player min width: {} cols", state.side_player_min_width)
+            }
+            "stacked-queue-height" => {
+                if state.stacked_queue_min_height > 500 {
+                    "Stacked queue min height: Disabled".into()
+                } else {
+                    format!("Stacked queue min height: {} rows", state.stacked_queue_min_height)
+                }
+            }
+            "wide-breakpoint" => {
+                format!("Wide layout min width: {} cols", state.wide_breakpoint_width)
+            }
             _ => item.title.clone(),
         };
+    }
+    if state.page.route == Route::Settings {
+        state.page_cache.insert(Route::Settings.key(), (state.page.clone(), Instant::now()));
     }
     vec![Effect::SaveSettings]
 }
@@ -1154,7 +1210,9 @@ mod tests {
         state.page.cursor.selected = 0;
 
         let effects = reduce(&mut state, Action::Activate);
-        assert!(matches!(effects.as_slice(), [Effect::PlayTrack { uri, .. }] if uri == "spotify:track:activated"));
+        assert!(
+            matches!(effects.as_slice(), [Effect::PlayTrack { uri, .. }] if uri == "spotify:track:activated")
+        );
         assert_eq!(state.playback.track_uri.as_deref(), Some("spotify:track:activated"));
         assert_eq!(state.playback.title, "Activated Track");
         assert_eq!(state.playback_history.len(), 1);
@@ -1213,7 +1271,9 @@ mod tests {
         let effects = dispatch_key(&mut state, key(KeyCode::Enter));
         assert!(!state.text_entry, "Text entry should close on search submission");
         assert!(effects.contains(&Effect::SaveSettings));
-        assert!(effects.iter().any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "rad")));
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "rad"))
+        );
     }
 
     #[test]
@@ -1254,7 +1314,11 @@ mod tests {
         let effects = submit_text(&mut state);
         assert_eq!(state.recent_searches, vec!["radiohead"]);
         assert!(effects.contains(&Effect::SaveSettings));
-        assert!(effects.iter().any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "radiohead")));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "radiohead"))
+        );
 
         // Duplicate submission brings it to the top without duplicates
         state.search_query = "daft punk".into();
@@ -1276,7 +1340,11 @@ mod tests {
 
         let effects = reduce(&mut state, Action::Activate);
         assert_eq!(state.search_query, "arcade fire");
-        assert!(effects.iter().any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "arcade fire")));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "arcade fire"))
+        );
     }
 
     #[test]
@@ -1304,5 +1372,156 @@ mod tests {
         assert!(effects.is_empty());
         assert_eq!(state.page.title, "Home");
         assert_eq!(state.page.subtitle, "Cached");
+    }
+
+    #[test]
+    fn navigation_shortcut_five_navigates_to_queue() {
+        let mut state = AppState::default();
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('5')));
+        assert_eq!(state.page.route, Route::Queue);
+    }
+
+    #[test]
+    fn activate_setting_cycles_adaptive_layout_thresholds_and_recomputes_layout() {
+        let mut state = AppState { terminal_size: (110, 26), ..Default::default() };
+        state.update_layout(110, 26);
+        assert_eq!(state.layout, crate::state::LayoutMode::SidePlayer);
+
+        // Populate setting items in page state
+        state.page.sections = vec![crate::state::Section {
+            title: "Terminal".into(),
+            items: vec![
+                crate::state::BrowseItem {
+                    id: "side-player-height".into(),
+                    kind: EntityKind::Action,
+                    title: String::new(),
+                    subtitle: String::new(),
+                    metadata: String::new(),
+                    uri: None,
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: None,
+                    available: true,
+                    context: None,
+                    restricted: false,
+                },
+                crate::state::BrowseItem {
+                    id: "side-player-width".into(),
+                    kind: EntityKind::Action,
+                    title: String::new(),
+                    subtitle: String::new(),
+                    metadata: String::new(),
+                    uri: None,
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: None,
+                    available: true,
+                    context: None,
+                    restricted: false,
+                },
+                crate::state::BrowseItem {
+                    id: "stacked-queue-height".into(),
+                    kind: EntityKind::Action,
+                    title: String::new(),
+                    subtitle: String::new(),
+                    metadata: String::new(),
+                    uri: None,
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: None,
+                    available: true,
+                    context: None,
+                    restricted: false,
+                },
+                crate::state::BrowseItem {
+                    id: "wide-breakpoint".into(),
+                    kind: EntityKind::Action,
+                    title: String::new(),
+                    subtitle: String::new(),
+                    metadata: String::new(),
+                    uri: None,
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: None,
+                    available: true,
+                    context: None,
+                    restricted: false,
+                },
+            ],
+        }];
+
+        // Cycle side-player-height from 28 -> 30
+        let effects = activate_setting(&mut state, "side-player-height");
+        assert_eq!(state.side_player_max_height, 30);
+        assert!(effects.contains(&Effect::SaveSettings));
+
+        // Cycle to 32 -> 0 (Disabled) -> 24 -> 26 -> 28
+        activate_setting(&mut state, "side-player-height");
+        assert_eq!(state.side_player_max_height, 32);
+        activate_setting(&mut state, "side-player-height");
+        assert_eq!(state.side_player_max_height, 0);
+        // With side-player-max-height = 0, layout recomputes from SidePlayer to Standard
+        assert_eq!(state.layout, crate::state::LayoutMode::Standard);
+
+        // Cycle side-player-width: 100 -> 110 -> 120 -> 80 -> 90 -> 100
+        activate_setting(&mut state, "side-player-width");
+        assert_eq!(state.side_player_min_width, 110);
+
+        // Cycle stacked-queue-height: 38 -> 42 -> 46 -> 999 -> 34 -> 38
+        activate_setting(&mut state, "stacked-queue-height");
+        assert_eq!(state.stacked_queue_min_height, 42);
+
+        // Cycle wide-breakpoint: 140 -> 150 -> 160 -> 120 -> 130 -> 140
+        activate_setting(&mut state, "wide-breakpoint");
+        assert_eq!(state.wide_breakpoint_width, 150);
+    }
+
+    #[test]
+    fn setting_change_persists_in_page_cache_on_subsequent_navigation() {
+        let mut state = AppState::default();
+        let generation = state.navigate(Route::Settings);
+        let mut settings_page = PageState::loading(Route::Settings, generation);
+        settings_page.sections = vec![crate::state::Section {
+            title: "Terminal".into(),
+            items: vec![crate::state::BrowseItem {
+                id: "side-player-height".into(),
+                kind: EntityKind::Action,
+                title: "Side player max height: 28 rows".into(),
+                subtitle: String::new(),
+                metadata: String::new(),
+                uri: None,
+                external_url: None,
+                artwork_url: None,
+                artists: Vec::new(),
+                album: None,
+                duration_ms: None,
+                available: true,
+                context: None,
+                restricted: false,
+            }],
+        }];
+        assert!(state.accept_page(settings_page));
+        assert_eq!(state.page.sections[0].items[0].title, "Side player max height: 28 rows");
+
+        // Activate setting: 28 -> 30
+        activate_setting(&mut state, "side-player-height");
+        assert_eq!(state.page.sections[0].items[0].title, "Side player max height: 30 rows");
+
+        // Navigate to Home
+        load_route(&mut state, Route::Home);
+        assert_eq!(state.page.route, Route::Home);
+
+        // Navigate back to Settings: should retrieve updated page with 30 rows, not old 28
+        load_route(&mut state, Route::Settings);
+        assert_eq!(state.page.route, Route::Settings);
+        assert_eq!(state.page.sections[0].items[0].title, "Side player max height: 30 rows");
     }
 }

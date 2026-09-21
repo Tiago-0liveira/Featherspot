@@ -15,18 +15,38 @@ pub enum LayoutMode {
     #[default]
     Standard,
     Wide,
+    SidePlayer,
+    StackedQueue,
 }
 
 impl LayoutMode {
     pub fn for_size(width: u16, height: u16) -> Self {
+        Self::for_size_with_settings(width, height, 28, 100, 140, 38)
+    }
+
+    pub fn for_size_with_settings(
+        width: u16,
+        height: u16,
+        side_player_max_height: u16,
+        side_player_min_width: u16,
+        wide_breakpoint_width: u16,
+        stacked_queue_min_height: u16,
+    ) -> Self {
         if width < MIN_WIDTH || height < MIN_HEIGHT {
             Self::Resize
+        } else if side_player_max_height > 0
+            && height <= side_player_max_height
+            && width >= side_player_min_width
+        {
+            Self::SidePlayer
+        } else if width >= wide_breakpoint_width {
+            Self::Wide
+        } else if stacked_queue_min_height <= 500 && height >= stacked_queue_min_height {
+            Self::StackedQueue
         } else if width < 100 {
             Self::Compact
-        } else if width < 140 {
-            Self::Standard
         } else {
-            Self::Wide
+            Self::Standard
         }
     }
 }
@@ -377,6 +397,11 @@ pub struct AppState {
     pub text_entry: bool,
     pub search_query: String,
     pub layout: LayoutMode,
+    pub terminal_size: (u16, u16),
+    pub side_player_max_height: u16,
+    pub side_player_min_width: u16,
+    pub stacked_queue_min_height: u16,
+    pub wide_breakpoint_width: u16,
     pub content_height: usize,
     /// Number of visible upcoming-queue rows in the rendered queue panel.
     pub queue_height: usize,
@@ -414,6 +439,11 @@ impl Default for AppState {
             text_entry: false,
             search_query: String::new(),
             layout: LayoutMode::Standard,
+            terminal_size: (120, 30),
+            side_player_max_height: 28,
+            side_player_min_width: 100,
+            stacked_queue_min_height: 38,
+            wide_breakpoint_width: 140,
             content_height: 10,
             queue_height: 1,
             generation: 0,
@@ -437,20 +467,48 @@ impl AppState {
     pub const NAVIGATION: [Route; 6] =
         [Route::Home, Route::Search, Route::Library, Route::Queue, Route::Devices, Route::Settings];
     pub fn update_layout(&mut self, width: u16, height: u16) {
-        self.layout = LayoutMode::for_size(width, height);
-        if self.layout == LayoutMode::Compact && self.focus == FocusRegion::Sidebar {
+        if width > 0 && height > 0 {
+            self.terminal_size = (width, height);
+        }
+        let (w, h) = if self.terminal_size.0 > 0 && self.terminal_size.1 > 0 {
+            self.terminal_size
+        } else {
+            (MIN_WIDTH, MIN_HEIGHT)
+        };
+        self.layout = LayoutMode::for_size_with_settings(
+            w,
+            h,
+            self.side_player_max_height,
+            self.side_player_min_width,
+            self.wide_breakpoint_width,
+            self.stacked_queue_min_height,
+        );
+        if (self.layout == LayoutMode::Compact
+            || self.layout == LayoutMode::SidePlayer
+            || self.layout == LayoutMode::StackedQueue)
+            && self.focus == FocusRegion::Sidebar
+        {
             self.focus = FocusRegion::Content;
         }
         if !self.queue_visible() && self.focus == FocusRegion::Queue {
             self.focus = FocusRegion::Content;
         }
     }
+    /// Returns true if this layout mode renders a persistent on-screen queue widget.
+    pub fn layout_has_inline_queue(&self) -> bool {
+        (self.layout == LayoutMode::Wide || self.layout == LayoutMode::StackedQueue)
+            && self.wide_queue
+    }
+    /// Returns true if the inline queue pane is actively being rendered right now.
     pub fn queue_visible(&self) -> bool {
-        self.layout == LayoutMode::Wide && self.wide_queue && self.page.route != Route::Queue
+        self.layout_has_inline_queue() && self.page.route != Route::Queue
     }
     pub fn navigate(&mut self, route: Route) -> u64 {
         if self.page.route != route {
-            if matches!(route, Route::Home | Route::Search | Route::Library | Route::Settings) {
+            if matches!(
+                route,
+                Route::Home | Route::Search | Route::Library | Route::Settings | Route::Queue
+            ) {
                 self.primary_section = route.clone();
             }
             self.history.push(self.page.clone());
@@ -505,16 +563,19 @@ impl AppState {
                     restricted: false,
                 })
                 .collect();
-            self.page.sections = vec![Section {
-                title: "Recent searches".into(),
-                items,
-            }];
+            self.page.sections = vec![Section { title: "Recent searches".into(), items }];
             self.page.state = LoadState::Ready;
         }
     }
     pub fn back(&mut self) {
         if let Some(page) = self.history.pop() {
             self.generation = self.generation.saturating_add(1);
+            if matches!(
+                page.route,
+                Route::Home | Route::Search | Route::Library | Route::Settings | Route::Queue
+            ) {
+                self.primary_section = page.route.clone();
+            }
             self.page = page;
             self.page.generation = self.generation;
             self.overlay = None;
@@ -523,7 +584,10 @@ impl AppState {
     }
     pub fn visible_focuses(&self) -> Vec<FocusRegion> {
         let mut regions = Vec::new();
-        if self.layout != LayoutMode::Compact {
+        if self.layout != LayoutMode::Compact
+            && self.layout != LayoutMode::SidePlayer
+            && self.layout != LayoutMode::StackedQueue
+        {
             regions.push(FocusRegion::Sidebar);
         }
         regions.push(FocusRegion::Content);
@@ -753,5 +817,107 @@ mod tests {
         assert_eq!(item.title, "My Song");
         assert_eq!(item.subtitle, "My Artist");
         assert_eq!(item.duration_ms, Some(180_000));
+    }
+
+    #[test]
+    fn layout_mode_for_size_with_settings_matrix() {
+        // Resize
+        assert_eq!(LayoutMode::for_size(79, 24), LayoutMode::Resize);
+        assert_eq!(LayoutMode::for_size(80, 23), LayoutMode::Resize);
+
+        // SidePlayer: height <= 28, width >= 100
+        assert_eq!(LayoutMode::for_size(100, 24), LayoutMode::SidePlayer);
+        assert_eq!(LayoutMode::for_size(120, 28), LayoutMode::SidePlayer);
+        assert_eq!(LayoutMode::for_size(160, 26), LayoutMode::SidePlayer);
+
+        // Wide: width >= 140 and height > 28
+        assert_eq!(LayoutMode::for_size(140, 30), LayoutMode::Wide);
+        assert_eq!(LayoutMode::for_size(160, 45), LayoutMode::Wide);
+
+        // StackedQueue: height >= 38 and width < 140
+        assert_eq!(LayoutMode::for_size(90, 40), LayoutMode::StackedQueue);
+        assert_eq!(LayoutMode::for_size(120, 38), LayoutMode::StackedQueue);
+
+        // Compact: width < 100 and height > 28 and height < 38
+        assert_eq!(LayoutMode::for_size(90, 30), LayoutMode::Compact);
+
+        // Standard: 100 <= width < 140 and 28 < height < 38
+        assert_eq!(LayoutMode::for_size(110, 30), LayoutMode::Standard);
+        assert_eq!(LayoutMode::for_size(130, 35), LayoutMode::Standard);
+
+        // Disabled SidePlayer (max_height = 0)
+        assert_eq!(
+            LayoutMode::for_size_with_settings(110, 26, 0, 100, 140, 38),
+            LayoutMode::Standard
+        );
+
+        // Disabled StackedQueue (min_height = 999)
+        assert_eq!(
+            LayoutMode::for_size_with_settings(90, 45, 28, 100, 140, 999),
+            LayoutMode::Compact
+        );
+    }
+
+    #[test]
+    fn layout_inline_queue_and_queue_visible_rules() {
+        // Standard: no inline queue
+        let mut state =
+            AppState { layout: LayoutMode::Standard, wide_queue: true, ..Default::default() };
+        assert!(!state.layout_has_inline_queue());
+        assert!(!state.queue_visible());
+
+        // SidePlayer: no inline queue
+        state.layout = LayoutMode::SidePlayer;
+        assert!(!state.layout_has_inline_queue());
+        assert!(!state.queue_visible());
+
+        // Wide: has inline queue when wide_queue is true and not on Route::Queue
+        state.layout = LayoutMode::Wide;
+        assert!(state.layout_has_inline_queue());
+        assert!(state.queue_visible());
+        state.page.route = Route::Queue;
+        assert!(state.layout_has_inline_queue());
+        assert!(!state.queue_visible());
+
+        // StackedQueue: has inline queue when wide_queue is true and not on Route::Queue
+        state.layout = LayoutMode::StackedQueue;
+        state.page.route = Route::Home;
+        assert!(state.layout_has_inline_queue());
+        assert!(state.queue_visible());
+        state.wide_queue = false;
+        assert!(!state.layout_has_inline_queue());
+        assert!(!state.queue_visible());
+    }
+
+    #[test]
+    fn navigate_and_back_synchronizes_primary_section_for_queue() {
+        let mut state = AppState::default();
+        assert_eq!(state.primary_section, Route::Home);
+
+        state.navigate(Route::Queue);
+        assert_eq!(state.primary_section, Route::Queue);
+
+        state.navigate(Route::Library);
+        assert_eq!(state.primary_section, Route::Library);
+
+        state.back();
+        assert_eq!(state.page.route, Route::Queue);
+        assert_eq!(state.primary_section, Route::Queue);
+
+        state.back();
+        assert_eq!(state.page.route, Route::Home);
+        assert_eq!(state.primary_section, Route::Home);
+    }
+
+    #[test]
+    fn visible_focuses_excludes_sidebar_in_side_player_and_stacked_queue() {
+        let mut state = AppState { layout: LayoutMode::SidePlayer, ..Default::default() };
+        assert!(!state.visible_focuses().contains(&FocusRegion::Sidebar));
+
+        state.layout = LayoutMode::StackedQueue;
+        assert!(!state.visible_focuses().contains(&FocusRegion::Sidebar));
+
+        state.layout = LayoutMode::Standard;
+        assert!(state.visible_focuses().contains(&FocusRegion::Sidebar));
     }
 }

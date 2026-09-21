@@ -32,14 +32,8 @@ mod tests {
 
     #[test]
     fn test_release_label_valid_day() {
-        assert_eq!(
-            release_label(Some("2023-05-12"), Some("day")),
-            Some("2023 05".into())
-        );
-        assert_eq!(
-            release_label(Some("2023-05"), Some("day")),
-            Some("2023 05".into())
-        );
+        assert_eq!(release_label(Some("2023-05-12"), Some("day")), Some("2023 05".into()));
+        assert_eq!(release_label(Some("2023-05"), Some("day")), Some("2023 05".into()));
     }
 
     #[test]
@@ -50,10 +44,7 @@ mod tests {
 
         // Multibyte character where byte 7 is a valid char boundary:
         // '年' is 3 bytes (0..3), '-' is 1 byte (3..4), '202' is 3 bytes (4..7).
-        assert_eq!(
-            release_label(Some("年-2023"), Some("day")),
-            Some("年 202".into())
-        );
+        assert_eq!(release_label(Some("年-2023"), Some("day")), Some("年 202".into()));
     }
 
     #[test]
@@ -75,10 +66,7 @@ mod tests {
 
     #[test]
     fn test_release_label_year() {
-        assert_eq!(
-            release_label(Some("2023"), Some("year")),
-            Some("2023".into())
-        );
+        assert_eq!(release_label(Some("2023"), Some("year")), Some("2023".into()));
         assert_eq!(release_label(Some("202a"), Some("year")), None);
         assert_eq!(release_label(Some("202"), Some("year")), None);
         assert_eq!(release_label(Some("20234"), Some("year")), None);

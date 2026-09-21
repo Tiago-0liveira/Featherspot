@@ -167,11 +167,23 @@ pub struct CliSettings {
     pub artwork: CliArtworkPreference,
     pub mouse: bool,
     pub wide_queue: bool,
+    pub side_player_max_height: u16,
+    pub side_player_min_width: u16,
+    pub stacked_queue_min_height: u16,
+    pub wide_breakpoint_width: u16,
 }
 
 impl Default for CliSettings {
     fn default() -> Self {
-        Self { artwork: CliArtworkPreference::Auto, mouse: true, wide_queue: true }
+        Self {
+            artwork: CliArtworkPreference::Auto,
+            mouse: true,
+            wide_queue: true,
+            side_player_max_height: 28,
+            side_player_min_width: 100,
+            stacked_queue_min_height: 38,
+            wide_breakpoint_width: 140,
+        }
     }
 }
 

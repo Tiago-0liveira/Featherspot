@@ -66,9 +66,7 @@ impl JsonSettingsStore {
             fs::rename(&self.path, &backup).map_err(io_error)?;
         }
         if let Err(error) = fs::rename(&temporary, &self.path) {
-            if had_existing
-                && let Err(rollback_error) = fs::rename(&backup, &self.path)
-            {
+            if had_existing && let Err(rollback_error) = fs::rename(&backup, &self.path) {
                 tracing::error!(%rollback_error, "failed to rollback settings from backup");
             }
             return Err(io_error(error));

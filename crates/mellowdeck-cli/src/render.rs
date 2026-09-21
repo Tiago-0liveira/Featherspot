@@ -38,6 +38,7 @@ pub fn render_with_artwork(
     render_inner(frame, state, hits, Some(artwork));
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_inner(
     frame: &mut Frame<'_>,
     state: &mut AppState,
@@ -52,99 +53,182 @@ fn render_inner(
         manager.clear_placement();
     }
     frame.render_widget(Block::default().style(Style::default().bg(INK).fg(Color::White)), area);
-    if state.layout == LayoutMode::Resize {
-        render_resize(frame, area);
-        return;
-    }
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(10), Constraint::Length(11)])
-        .split(area);
-    let body = vertical[1];
-    render_topbar(frame, vertical[0], state, hits);
     match state.layout {
-        LayoutMode::Compact => {
-            let header = Rect { x: body.x, y: body.y, width: body.width, height: 0 };
-            hits.add(Rect { x: header.x, y: header.y, width: 8, height: 2 }, HitTarget::MenuButton);
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        " ☰ Menu ",
-                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(state.page.route.label(), Style::default().fg(PEACH)),
-                ]))
-                .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(BORDER_SUBTLE))),
-                header,
-            );
-            let content = body;
+        LayoutMode::Resize => {
+            render_resize(frame, area);
+        }
+        LayoutMode::SidePlayer => {
+            let vertical = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(2), Constraint::Min(10)])
+                .split(area);
+            render_topbar(frame, vertical[0], state, hits);
+            let body = vertical[1];
+            let player_width = (body.width / 3).clamp(36, 44);
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Fill(1), Constraint::Length(player_width)])
+                .split(body);
             render_content(
                 frame,
-                content,
+                columns[0],
                 state,
                 hits,
                 if artwork_visible { artwork.as_deref_mut() } else { None },
             );
-        }
-        LayoutMode::Standard => {
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(0), Constraint::Min(40)])
-                .split(body);
-            render_sidebar(frame, columns[0], state, hits);
-            render_content(
+            render_player(
                 frame,
                 columns[1],
                 state,
                 hits,
-                if artwork_visible { artwork.as_deref_mut() } else { None },
+                if artwork_visible { artwork } else { None },
             );
+            render_overlay(frame, state, hits);
         }
-        LayoutMode::Wide => {
-            // Let a wide queue grow with the terminal, while always leaving a useful main pane.
-            let queue_width = if state.queue_visible() {
-                (body.width / 3).clamp(34, body.width.saturating_sub(60))
-            } else {
-                0
-            };
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
+        LayoutMode::StackedQueue => {
+            let queue_height =
+                if state.queue_visible() { (area.height / 4).clamp(8, 12) } else { 0 };
+            let vertical = Layout::default()
+                .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(0),
-                    Constraint::Min(50),
-                    Constraint::Length(queue_width),
+                    Constraint::Length(2),
+                    Constraint::Min(10),
+                    Constraint::Length(queue_height),
+                    Constraint::Length(11),
                 ])
-                .split(body);
-            render_sidebar(frame, columns[0], state, hits);
+                .split(area);
+            render_topbar(frame, vertical[0], state, hits);
             render_content(
                 frame,
-                columns[1],
+                vertical[1],
                 state,
                 hits,
                 if artwork_visible { artwork.as_deref_mut() } else { None },
             );
             if state.queue_visible() {
-                render_queue(frame, columns[2], state, hits);
+                render_queue(frame, vertical[2], state, hits);
             }
+            render_player(
+                frame,
+                vertical[3],
+                state,
+                hits,
+                if artwork_visible { artwork } else { None },
+            );
+            render_overlay(frame, state, hits);
         }
-        LayoutMode::Resize => {}
+        LayoutMode::Compact | LayoutMode::Standard | LayoutMode::Wide => {
+            let vertical = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(2), Constraint::Min(10), Constraint::Length(11)])
+                .split(area);
+            let body = vertical[1];
+            render_topbar(frame, vertical[0], state, hits);
+            match state.layout {
+                LayoutMode::Compact => {
+                    let header = Rect { x: body.x, y: body.y, width: body.width, height: 0 };
+                    if header.height > 0 {
+                        hits.add(
+                            Rect { x: header.x, y: header.y, width: 8, height: header.height },
+                            HitTarget::MenuButton,
+                        );
+                    }
+                    frame.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(
+                                " ☰ Menu ",
+                                Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(state.page.route.label(), Style::default().fg(PEACH)),
+                        ]))
+                        .block(
+                            Block::default()
+                                .borders(Borders::BOTTOM)
+                                .border_style(Style::default().fg(BORDER_SUBTLE)),
+                        ),
+                        header,
+                    );
+                    let content = body;
+                    render_content(
+                        frame,
+                        content,
+                        state,
+                        hits,
+                        if artwork_visible { artwork.as_deref_mut() } else { None },
+                    );
+                }
+                LayoutMode::Standard => {
+                    let columns = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Length(0), Constraint::Min(40)])
+                        .split(body);
+                    render_sidebar(frame, columns[0], state, hits);
+                    render_content(
+                        frame,
+                        columns[1],
+                        state,
+                        hits,
+                        if artwork_visible { artwork.as_deref_mut() } else { None },
+                    );
+                }
+                LayoutMode::Wide => {
+                    // Let a wide queue grow with the terminal, while always leaving a useful main pane.
+                    let queue_width = if state.queue_visible() {
+                        (body.width / 3).clamp(34, body.width.saturating_sub(60))
+                    } else {
+                        0
+                    };
+                    let columns = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Length(0),
+                            Constraint::Min(50),
+                            Constraint::Length(queue_width),
+                        ])
+                        .split(body);
+                    render_sidebar(frame, columns[0], state, hits);
+                    render_content(
+                        frame,
+                        columns[1],
+                        state,
+                        hits,
+                        if artwork_visible { artwork.as_deref_mut() } else { None },
+                    );
+                    if state.queue_visible() {
+                        render_queue(frame, columns[2], state, hits);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            render_player(
+                frame,
+                vertical[2],
+                state,
+                hits,
+                if artwork_visible { artwork } else { None },
+            );
+            render_overlay(frame, state, hits);
+        }
     }
-    render_player(frame, vertical[2], state, hits, if artwork_visible { artwork } else { None });
-    render_overlay(frame, state, hits);
 }
 
 fn render_topbar(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
-    let routes = [
+    let mut routes = vec![
         ("1", "⌂ Home", Route::Home),
         ("2", "⌕ Search", Route::Search),
         ("3", "▣ Library", Route::Library),
         ("4", "⚙ Settings", Route::Settings),
     ];
+    if !state.layout_has_inline_queue() {
+        routes.push(("5", "☷ Queue", Route::Queue));
+    }
+    let (title_prefix, prefix_cells) =
+        if area.width < 85 { (" ♪ ", 3) } else { (" ♪ Mellowdeck  ", 14) };
     let mut spans = vec![Span::styled(
-        " ♪ Mellowdeck  ",
+        title_prefix,
         Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
     )];
-    let mut x = area.x.saturating_add(14);
+    let mut x = area.x.saturating_add(prefix_cells);
     for (key, label, route) in routes {
         let active = route == state.primary_section;
         let item_text = format!(" [{key}] {label} ");
@@ -252,7 +336,7 @@ fn render_content(
         Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
     );
     let header_height = if has_detail {
-        10
+        if area.height < 16 { 5 } else { 10 }
     } else if matches!(state.page.route, Route::Search | Route::Library) {
         4
     } else {
@@ -279,10 +363,12 @@ fn render_content(
         } else {
             (ArtworkPlacement::Preview, selected_art, "ART")
         };
+        let max_art_w = chunks[0].width.saturating_sub(2);
         let art_area = Rect {
             x: chunks[0].x + 1,
             y: chunks[0].y + 1,
-            width: if has_detail { 15 } else { 6 },
+            width: if has_detail { if area.height < 16 { 6 } else { 15 } } else { 6 }
+                .min(max_art_w),
             height: chunks[0].height.saturating_sub(2),
         };
         artwork.render(frame, art_area, placement, url, placeholder);
@@ -371,6 +457,7 @@ fn render_content(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
     let selected_art = state.page.selected_item().and_then(|item| item.artwork_url.as_deref());
     let has_detail = matches!(
@@ -378,7 +465,7 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
         Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
     );
     let padding = if has_detail {
-        16
+        if area.height < 8 { 8 } else { 16 }
     } else if selected_art.is_some() {
         7
     } else {
@@ -457,18 +544,18 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
                 Span::styled(&state.page.title, Style::default().add_modifier(Modifier::BOLD)),
             ]));
             lines.push(Line::from(Span::styled(&state.page.subtitle, Style::default().fg(MUTED))));
-            lines.push(Line::from(Span::styled(
-                " Enter plays/opens · a queues · i inspects · right-click actions ",
-                Style::default().fg(SAGE),
-            )));
+            if area.height >= 8 {
+                lines.push(Line::from(Span::styled(
+                    " Enter plays/opens · a queues · i inspects · right-click actions ",
+                    Style::default().fg(SAGE),
+                )));
+            }
         }
         _ => {}
     }
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .padding(Padding::left(padding))
-                .style(Style::default().bg(INK)),
+            Block::default().padding(Padding::left(padding)).style(Style::default().bg(INK)),
         ),
         area,
     );
@@ -507,17 +594,16 @@ fn render_queue(frame: &mut Frame<'_>, area: Rect, state: &mut AppState, hits: &
         " Now playing",
         Style::default().fg(SAGE).add_modifier(Modifier::BOLD),
     ))));
-    let now_playing = state
-        .queue_now
-        .as_ref()
-        .map(|now| (now.title.as_str(), now.subtitle.as_str()))
-        .or_else(|| {
-            if state.playback.track_uri.is_some() && !state.playback.title.is_empty() {
-                Some((state.playback.title.as_str(), state.playback.artist.as_str()))
-            } else {
-                None
-            }
-        });
+    let now_playing =
+        state.queue_now.as_ref().map(|now| (now.title.as_str(), now.subtitle.as_str())).or_else(
+            || {
+                if state.playback.track_uri.is_some() && !state.playback.title.is_empty() {
+                    Some((state.playback.title.as_str(), state.playback.artist.as_str()))
+                } else {
+                    None
+                }
+            },
+        );
     if let Some((title, subtitle)) = now_playing {
         rows.push(ListItem::new(format!(" ♪ {title} — {subtitle}")));
     } else {
@@ -555,6 +641,226 @@ fn render_queue(frame: &mut Frame<'_>, area: Rect, state: &mut AppState, hits: &
     );
 }
 
+fn render_player_status(
+    frame: &mut Frame<'_>,
+    status_row: Rect,
+    state: &AppState,
+    hits: &mut HitMap,
+) {
+    if status_row.width == 0 || status_row.height == 0 {
+        return;
+    }
+    let help = if status_row.width < 45 { "?" } else { "? Help" };
+    let device_name = state.playback.device_name.as_deref().unwrap_or("choose with d");
+    let prefix = "Device: ";
+    let separator = "  ·  ";
+    let device_max = status_row.width.saturating_sub(
+        cell_width(prefix).saturating_add(cell_width(separator)).saturating_add(cell_width(help)),
+    );
+    let shown_device = truncate_cells(device_name, device_max);
+    let device_text = format!("{prefix}{shown_device}");
+    let group_width = cell_width(&device_text)
+        .saturating_add(cell_width(separator))
+        .saturating_add(cell_width(help))
+        .min(status_row.width);
+    let group_x = status_row.x.saturating_add(status_row.width.saturating_sub(group_width));
+    let device_rect =
+        Rect { x: group_x, width: cell_width(&device_text).min(status_row.width), ..status_row };
+    let help_rect = Rect {
+        x: status_row.x.saturating_add(status_row.width.saturating_sub(cell_width(help))),
+        width: cell_width(help).min(status_row.width),
+        ..status_row
+    };
+    let notice_width = group_x.saturating_sub(status_row.x).saturating_sub(1);
+    let default_notice = if (5..10).contains(&notice_width) { "Ready" } else { "Mellowdeck" };
+    let notice = state.notice.as_ref().map_or(default_notice, |notice| notice.text.as_str());
+    let notice_style = state.notice.as_ref().map_or(Style::default().fg(MUTED), |notice| {
+        Style::default().fg(match notice.kind {
+            crate::state::NoticeKind::Success => SAGE,
+            crate::state::NoticeKind::Pending => LAVENDER,
+            crate::state::NoticeKind::Error => PEACH,
+            crate::state::NoticeKind::Info => MUTED,
+        })
+    });
+    frame.render_widget(
+        Paragraph::new(truncate_cells(notice, notice_width)).style(notice_style),
+        Rect { width: notice_width, ..status_row },
+    );
+    frame.render_widget(Paragraph::new(device_text).style(Style::default().fg(MUTED)), device_rect);
+    let sep_x = device_rect.x.saturating_add(device_rect.width);
+    let sep_w = cell_width(separator).min(help_rect.x.saturating_sub(sep_x));
+    if sep_w > 0 {
+        frame.render_widget(
+            Paragraph::new(separator).style(Style::default().fg(BORDER_SUBTLE)),
+            Rect { x: sep_x, width: sep_w, ..status_row },
+        );
+    }
+    frame.render_widget(Paragraph::new(help).style(Style::default().fg(MUTED)), help_rect);
+    if device_rect.width > 0 {
+        hits.add(device_rect, HitTarget::PlayerDevice);
+    }
+    if help_rect.width > 0 {
+        hits.add(help_rect, HitTarget::Help);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_player_vertical(
+    frame: &mut Frame<'_>,
+    inner: Rect,
+    state: &AppState,
+    hits: &mut HitMap,
+    artwork: Option<&mut ArtworkManager>,
+) {
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let progress = state.playback.progress_at(Instant::now());
+
+    let status_row =
+        Rect { y: inner.y.saturating_add(inner.height.saturating_sub(1)), height: 1, ..inner };
+    render_player_status(frame, status_row, state, hits);
+
+    if inner.height <= 2 {
+        return;
+    }
+
+    let deck =
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: inner.height.saturating_sub(1) };
+
+    let show_album = deck.height >= 14 && !state.playback.album.is_empty();
+    let num_controls_rows = if show_album { 6 } else { 5 };
+    let art_h = deck
+        .height
+        .saturating_sub(num_controls_rows)
+        .clamp(4, 9)
+        .min(deck.height.saturating_sub(num_controls_rows));
+
+    let art_w = (inner.width.saturating_sub(4)).clamp(6, 24).min(inner.width);
+    let art_x = inner.x.saturating_add((inner.width.saturating_sub(art_w)) / 2);
+    let art_area = Rect { x: art_x, y: deck.y, width: art_w, height: art_h };
+
+    if let Some(artwork) = artwork {
+        artwork.render(
+            frame,
+            art_area,
+            ArtworkPlacement::Player,
+            state.playback.artwork_url.as_deref(),
+            "♪",
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("♪").alignment(Alignment::Center).style(Style::default().fg(MUTED)),
+            art_area,
+        );
+    }
+
+    let remaining = Rect {
+        x: inner.x,
+        y: deck.y.saturating_add(art_h),
+        width: inner.width,
+        height: deck.height.saturating_sub(art_h),
+    };
+
+    if remaining.height == 0 {
+        return;
+    }
+
+    let constraints = if show_album {
+        vec![
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    } else {
+        vec![
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    };
+
+    let chunks =
+        Layout::default().direction(Direction::Vertical).constraints(constraints).split(remaining);
+
+    let (title_area, artist_area, album_area, buttons_area, progress_area, volume_area) =
+        if show_album {
+            (chunks[0], chunks[1], Some(chunks[2]), chunks[4], chunks[6], chunks[7])
+        } else {
+            (chunks[0], chunks[1], None, chunks[3], chunks[5], chunks[6])
+        };
+
+    let title =
+        if state.playback.title.is_empty() { "Nothing playing" } else { &state.playback.title };
+    frame.render_widget(
+        Paragraph::new(truncate_cells(title, inner.width))
+            .alignment(Alignment::Center)
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+        title_area,
+    );
+
+    let artist_str = &state.playback.artist;
+    let artist_w = cell_width(artist_str).min(inner.width);
+    frame.render_widget(
+        Paragraph::new(truncate_cells(artist_str, inner.width))
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(LAVENDER)),
+        artist_area,
+    );
+    let start_x = artist_area.x.saturating_add((artist_area.width.saturating_sub(artist_w)) / 2);
+    let mut ax = start_x;
+    for (name, uri) in &state.playback.artists {
+        let w = cell_width(name)
+            .min(artist_area.x.saturating_add(artist_area.width).saturating_sub(ax));
+        if w > 0
+            && let Some(uri) = uri
+        {
+            hits.add(
+                Rect { x: ax, width: w, ..artist_area },
+                HitTarget::PlayerArtist { title: name.clone(), uri: uri.clone() },
+            );
+        }
+        ax = ax.saturating_add(cell_width(name)).saturating_add(2);
+    }
+
+    if let Some(album_area) = album_area {
+        let album_str = &state.playback.album;
+        let album_w = cell_width(album_str).min(inner.width);
+        frame.render_widget(
+            Paragraph::new(truncate_cells(album_str, inner.width))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(PEACH)),
+            album_area,
+        );
+        if let Some(uri) = &state.playback.album_uri {
+            let ax = album_area.x.saturating_add((album_area.width.saturating_sub(album_w)) / 2);
+            if album_w > 0 {
+                hits.add(
+                    Rect { x: ax, width: album_w, ..album_area },
+                    HitTarget::PlayerAlbum { title: album_str.clone(), uri: uri.clone() },
+                );
+            }
+        }
+    }
+
+    render_player_buttons(frame, buttons_area, state, hits);
+    render_progress_bar(frame, progress_area, state, progress, hits, true);
+
+    let vol_width = 18.min(volume_area.width);
+    let vol_x = volume_area.x.saturating_add((volume_area.width.saturating_sub(vol_width)) / 2);
+    let vol_rect = Rect { x: vol_x, width: vol_width, ..volume_area };
+    render_volume_widget(frame, vol_rect, state.playback.volume, hits, true);
+}
+
 #[allow(clippy::too_many_lines)]
 fn render_player(
     frame: &mut Frame<'_>,
@@ -566,6 +872,10 @@ fn render_player(
     frame.render_widget(focus_block(" Player ", state.focus == FocusRegion::Player), area);
     let inner = Block::default().borders(Borders::ALL).inner(area);
     if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    if state.layout == LayoutMode::SidePlayer || (area.width < 55 && area.height >= 14) {
+        render_player_vertical(frame, inner, state, hits, artwork);
         return;
     }
     let progress = state.playback.progress_at(Instant::now());
@@ -663,49 +973,7 @@ fn render_player(
     }
     let status_row =
         Rect { y: inner.y.saturating_add(inner.height.saturating_sub(1)), height: 1, ..inner };
-    let help = "? Help";
-    let device_name = state.playback.device_name.as_deref().unwrap_or("choose with d");
-    let prefix = "Device: ";
-    let separator = "  ·  ";
-    let device_max = status_row.width.saturating_sub(
-        cell_width(prefix).saturating_add(cell_width(separator)).saturating_add(cell_width(help)),
-    );
-    let shown_device = truncate_cells(device_name, device_max);
-    let device_text = format!("{prefix}{shown_device}");
-    let group_width = cell_width(&device_text)
-        .saturating_add(cell_width(separator))
-        .saturating_add(cell_width(help))
-        .min(status_row.width);
-    let group_x = status_row.x.saturating_add(status_row.width.saturating_sub(group_width));
-    let device_rect =
-        Rect { x: group_x, width: cell_width(&device_text).min(status_row.width), ..status_row };
-    let help_rect = Rect {
-        x: status_row.x.saturating_add(status_row.width.saturating_sub(cell_width(help))),
-        width: cell_width(help).min(status_row.width),
-        ..status_row
-    };
-    let notice_width = group_x.saturating_sub(status_row.x).saturating_sub(1);
-    let notice = state.notice.as_ref().map_or("Ready", |notice| notice.text.as_str());
-    let notice_style = state.notice.as_ref().map_or(Style::default().fg(MUTED), |notice| {
-        Style::default().fg(match notice.kind {
-            crate::state::NoticeKind::Success => SAGE,
-            crate::state::NoticeKind::Pending => LAVENDER,
-            crate::state::NoticeKind::Error => PEACH,
-            crate::state::NoticeKind::Info => MUTED,
-        })
-    });
-    frame.render_widget(
-        Paragraph::new(truncate_cells(notice, notice_width)).style(notice_style),
-        Rect { width: notice_width, ..status_row },
-    );
-    frame.render_widget(Paragraph::new(device_text).style(Style::default().fg(MUTED)), device_rect);
-    frame.render_widget(Paragraph::new(help).style(Style::default().fg(MUTED)), help_rect);
-    if device_rect.width > 0 {
-        hits.add(device_rect, HitTarget::PlayerDevice);
-    }
-    if help_rect.width > 0 {
-        hits.add(help_rect, HitTarget::Help);
-    }
+    render_player_status(frame, status_row, state, hits);
     if let Some(artwork) = artwork {
         artwork.render(
             frame,
@@ -723,22 +991,14 @@ fn render_player(
 }
 
 #[allow(clippy::too_many_lines)]
-fn render_player_buttons(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    state: &AppState,
-    hits: &mut HitMap,
-) {
+fn render_player_buttons(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    if area.width >= 30 {
-        let [_, buttons_deck, _] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(31),
-            Constraint::Fill(1),
-        ])
-        .areas(area);
+    if area.width >= 31 {
+        let [_, buttons_deck, _] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(31), Constraint::Fill(1)])
+                .areas(area);
 
         let [shuffle_area, _, prev_area, _, play_area, _, next_area, _, repeat_area] =
             Layout::horizontal([
@@ -797,12 +1057,9 @@ fn render_player_buttons(
         frame.render_widget(Paragraph::new(repeat_text).style(repeat_style), repeat_area);
         hits.add(repeat_area, HitTarget::PlayerRepeat);
     } else if area.width >= 16 {
-        let [_, buttons_deck, _] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(16),
-            Constraint::Fill(1),
-        ])
-        .areas(area);
+        let [_, buttons_deck, _] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(16), Constraint::Fill(1)])
+                .areas(area);
 
         let [prev_area, _, play_area, _, next_area] = Layout::horizontal([
             Constraint::Length(4),
@@ -874,12 +1131,9 @@ fn render_player_progress_and_volume(
         render_progress_bar(frame, progress_chunk, state, progress, hits, true);
         render_volume_widget(frame, volume_chunk, state.playback.volume, hits, true);
     } else if centered_area.width >= 45 {
-        let [progress_chunk, _, volume_chunk] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(2),
-            Constraint::Length(7),
-        ])
-        .areas(centered_area);
+        let [progress_chunk, _, volume_chunk] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(2), Constraint::Length(7)])
+                .areas(centered_area);
 
         render_progress_bar(frame, progress_chunk, state, progress, hits, false);
         render_volume_widget(frame, volume_chunk, state.playback.volume, hits, false);
@@ -903,12 +1157,9 @@ fn render_progress_bar(
     let right_text = clock(state.playback.duration_ms);
 
     let (left_area, bar_area, right_area) = if show_total && area.width >= 20 {
-        let [left, bar, right] = Layout::horizontal([
-            Constraint::Length(6),
-            Constraint::Fill(1),
-            Constraint::Length(6),
-        ])
-        .areas(area);
+        let [left, bar, right] =
+            Layout::horizontal([Constraint::Length(6), Constraint::Fill(1), Constraint::Length(6)])
+                .areas(area);
         (Some(left), bar, Some(right))
     } else if area.width >= 12 {
         let [left, bar] =
@@ -974,11 +1225,8 @@ fn render_volume_widget(
         } else {
             "🔊 "
         };
-        let icon_style = if volume == 0 {
-            Style::default().fg(MUTED)
-        } else {
-            Style::default().fg(PEACH)
-        };
+        let icon_style =
+            if volume == 0 { Style::default().fg(MUTED) } else { Style::default().fg(PEACH) };
         let segments = 8_usize;
         let filled = (usize::from(volume) * segments + 50) / 100;
         let filled = filled.min(segments);
@@ -1130,7 +1378,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 ),
                 (
                     "Browse",
-                    "1-4 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · q Queue · d devices · i inspector",
+                    "1-5 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · q Queue · d devices · i inspector",
                 ),
                 (
                     "Mouse",
@@ -1239,6 +1487,7 @@ fn clock(milliseconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{BrowseItem, Section};
     #[test]
     fn player_regions_are_distinct_and_metadata_is_not_duplicated() {
         let backend = TestBackend::new(120, 35);
@@ -1265,8 +1514,14 @@ mod tests {
         let volume = hits.rect_for(&HitTarget::PlayerVolume).unwrap();
         assert!(progress.x + progress.width <= volume.x || volume.x + volume.width <= progress.x);
         assert_ne!(hits.rect_for(&HitTarget::PlayerDevice), hits.rect_for(&HitTarget::Help));
-        assert_ne!(hits.rect_for(&HitTarget::PlayerPrevious), hits.rect_for(&HitTarget::PlayerNext));
-        assert_ne!(hits.rect_for(&HitTarget::PlayerShuffle), hits.rect_for(&HitTarget::PlayerRepeat));
+        assert_ne!(
+            hits.rect_for(&HitTarget::PlayerPrevious),
+            hits.rect_for(&HitTarget::PlayerNext)
+        );
+        assert_ne!(
+            hits.rect_for(&HitTarget::PlayerShuffle),
+            hits.rect_for(&HitTarget::PlayerRepeat)
+        );
     }
 
     use ratatui::{Terminal, backend::TestBackend};
@@ -1429,5 +1684,236 @@ mod tests {
         let volume = hits.rect_for(&HitTarget::PlayerVolume).unwrap();
         assert_eq!(progress.y, volume.y);
         assert!(progress.x + progress.width <= volume.x);
+    }
+
+    #[test]
+    fn side_player_rendering_and_topbar_queue() {
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.playback.title = "Side Track".into();
+        state.playback.artist = "Side Artist".into();
+        state.playback.album = "Side Album".into();
+        state.playback.duration_ms = 180_000;
+        state.playback.volume = 70;
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+
+        assert_eq!(state.layout, LayoutMode::SidePlayer);
+        // Topbar has [5] Queue in SidePlayer
+        assert!(hits.rect_for(&HitTarget::TopNav(Route::Queue)).is_some());
+        // Inline queue pane is omitted
+        assert!(hits.queue.is_none());
+
+        // Player is rendered in the right pane: x should be >= 90
+        let toggle = hits.rect_for(&HitTarget::PlayerToggle).unwrap();
+        assert!(toggle.x >= 90);
+        let progress = hits.rect_for(&HitTarget::PlayerProgress).unwrap();
+        assert!(progress.x >= 90);
+        let volume = hits.rect_for(&HitTarget::PlayerVolume).unwrap();
+        assert!(volume.x >= 90);
+
+        // In vertical deck, toggle button is vertically above progress, which is above volume
+        assert!(toggle.y < progress.y);
+        assert!(progress.y <= volume.y);
+    }
+
+    #[test]
+    fn stacked_queue_rendering_and_collapsing() {
+        let backend = TestBackend::new(100, 42);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.queue_upcoming.push(BrowseItem {
+            id: "q1".into(),
+            kind: EntityKind::Track,
+            title: "Upcoming Song".into(),
+            subtitle: "Upcoming Artist".into(),
+            metadata: String::new(),
+            uri: Some("spotify:track:q1".into()),
+            external_url: None,
+            artwork_url: None,
+            artists: Vec::new(),
+            album: None,
+            duration_ms: Some(180_000),
+            available: true,
+            context: None,
+            restricted: false,
+        });
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+
+        assert_eq!(state.layout, LayoutMode::StackedQueue);
+        // Inline queue is visible
+        assert!(hits.queue.is_some());
+        let queue_rect = hits.queue.unwrap();
+        // Player is bottom 11 rows, so y should be >= 31
+        let player_toggle = hits.rect_for(&HitTarget::PlayerToggle).unwrap();
+        assert!(queue_rect.y + queue_rect.height <= player_toggle.y);
+        // Topbar does NOT contain [5] Queue because inline queue is present
+        assert!(hits.rect_for(&HitTarget::TopNav(Route::Queue)).is_none());
+
+        // When navigating to Route::Queue, inline queue collapses
+        state.page.route = Route::Queue;
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+        assert!(hits.queue.is_none());
+    }
+
+    #[test]
+    fn responsive_detail_header_preserves_tracks_on_compact_screens() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.page.route =
+            Route::Album { uri: "spotify:album:test".into(), title: "Short Album".into() };
+        for i in 0..10 {
+            state.page.sections.push(Section {
+                title: format!("Disc {i}"),
+                items: vec![BrowseItem {
+                    id: format!("t{i}"),
+                    kind: EntityKind::Track,
+                    title: format!("Track {i}"),
+                    subtitle: "Artist".into(),
+                    metadata: String::new(),
+                    uri: Some(format!("spotify:track:{i}")),
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: Some(180_000),
+                    available: true,
+                    context: None,
+                    restricted: false,
+                }],
+            });
+        }
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+
+        // On 80x24 (Compact), body height is 11 (< 16), so header height is 5.
+        // List area has 11 - 5 = 6 rows, so content_height = 4 visible track rows!
+        assert!(state.content_height >= 4);
+        assert!(hits.rect_for(&HitTarget::ContentRow(0)).is_some());
+        assert!(hits.rect_for(&HitTarget::ContentRow(1)).is_some());
+    }
+
+    #[test]
+    fn topbar_80_col_alignment_and_hit_targets() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+
+        // 80x24 is Compact: has 5 tabs
+        let home = hits.rect_for(&HitTarget::TopNav(Route::Home)).unwrap();
+        assert_eq!(home.x, 3); // " ♪ " is 3 cells
+        let queue = hits.rect_for(&HitTarget::TopNav(Route::Queue)).unwrap();
+        assert!(queue.x + queue.width <= 80);
+    }
+
+    #[test]
+    fn side_player_status_uses_ready_and_renders_separator() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(output.contains("Ready"));
+        assert!(!output.contains("Mellowd…"));
+        assert!(output.contains("·"));
+        assert!(hits.rect_for(&HitTarget::PlayerDevice).is_some());
+    }
+
+    #[test]
+    fn side_player_safely_handles_small_player_height() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = AppState { layout: LayoutMode::SidePlayer, ..Default::default() };
+        let mut hits = HitMap::default();
+        // Area with height 10 and width 38
+        terminal
+            .draw(|frame| {
+                render_player(
+                    frame,
+                    Rect { x: 62, y: 2, width: 38, height: 10 },
+                    &state,
+                    &mut hits,
+                    None,
+                );
+            })
+            .unwrap();
+        assert!(hits.rect_for(&HitTarget::PlayerDevice).is_some());
+    }
+
+    #[test]
+    fn help_overlay_shows_five_views() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState {
+            overlay: Some(crate::state::Overlay::Help { query: String::new(), editing: false }),
+            ..Default::default()
+        };
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(output.contains("1-5 views"));
+    }
+
+    #[test]
+    fn buttons_breakpoint_at_30_vs_31() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = AppState::default();
+
+        // At width 30: 3 buttons (prev, play, next), no shuffle or repeat
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|frame| {
+                render_player_buttons(
+                    frame,
+                    Rect { x: 0, y: 0, width: 30, height: 1 },
+                    &state,
+                    &mut hits,
+                );
+            })
+            .unwrap();
+        assert!(hits.rect_for(&HitTarget::PlayerToggle).is_some());
+        assert!(hits.rect_for(&HitTarget::PlayerPrevious).is_some());
+        assert!(hits.rect_for(&HitTarget::PlayerNext).is_some());
+        assert!(hits.rect_for(&HitTarget::PlayerShuffle).is_none());
+        assert!(hits.rect_for(&HitTarget::PlayerRepeat).is_none());
+
+        // At width 31: all 5 buttons
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|frame| {
+                render_player_buttons(
+                    frame,
+                    Rect { x: 0, y: 0, width: 31, height: 1 },
+                    &state,
+                    &mut hits,
+                );
+            })
+            .unwrap();
+        assert!(hits.rect_for(&HitTarget::PlayerToggle).is_some());
+        assert!(hits.rect_for(&HitTarget::PlayerPrevious).is_some());
+        assert!(hits.rect_for(&HitTarget::PlayerNext).is_some());
+        assert!(hits.rect_for(&HitTarget::PlayerShuffle).is_some());
+        assert!(hits.rect_for(&HitTarget::PlayerRepeat).is_some());
     }
 }

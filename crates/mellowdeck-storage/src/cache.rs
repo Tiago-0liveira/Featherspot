@@ -147,16 +147,22 @@ impl SqliteCache {
                 .map_err(storage_error)?;
             if bytes <= 0 {
                 size = transaction
-                    .query_row("SELECT COALESCE(SUM(size_bytes), 0) FROM cache_entries", [], |row| {
-                        row.get(0)
-                    })
+                    .query_row(
+                        "SELECT COALESCE(SUM(size_bytes), 0) FROM cache_entries",
+                        [],
+                        |row| row.get(0),
+                    )
                     .map_err(storage_error)?;
                 if size <= maximum {
                     break;
                 }
                 // Also check if any remaining entries have size_bytes > 0; if not, break to prevent infinite loop
                 let positive_count: i64 = transaction
-                    .query_row("SELECT COUNT(*) FROM cache_entries WHERE size_bytes > 0", [], |row| row.get(0))
+                    .query_row(
+                        "SELECT COUNT(*) FROM cache_entries WHERE size_bytes > 0",
+                        [],
+                        |row| row.get(0),
+                    )
                     .map_err(storage_error)?;
                 if positive_count == 0 {
                     break;
@@ -166,7 +172,8 @@ impl SqliteCache {
             }
         }
         transaction.commit().map_err(storage_error)?;
-        u64::try_from(size.max(0)).map_err(|_| AppError::new(ErrorKind::Storage, "cache size is invalid"))
+        u64::try_from(size.max(0))
+            .map_err(|_| AppError::new(ErrorKind::Storage, "cache size is invalid"))
     }
 }
 

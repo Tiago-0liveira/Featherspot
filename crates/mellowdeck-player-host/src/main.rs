@@ -205,4 +205,3 @@ mod tests {
         assert_eq!(parsed["payload"]["reason"], "WebView2 runtime missing");
     }
 }
-

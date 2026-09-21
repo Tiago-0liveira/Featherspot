@@ -194,10 +194,7 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
                 2 => "track",
                 _ => "off",
             };
-            ServiceResponse::Command {
-                effect,
-                result: api.repeat(token, mode),
-            }
+            ServiceResponse::Command { effect, result: api.repeat(token, mode) }
         }
         Effect::PlayTrack { uri, device_id } => ServiceResponse::Command {
             effect,
@@ -376,6 +373,10 @@ fn load_page(
                     setting_item("artwork", "Artwork: Auto / Blocks / Off"),
                     setting_item("mouse", "Mouse input: enabled"),
                     setting_item("wide-queue", "Wide-screen queue: enabled"),
+                    setting_item("side-player-height", "Side player max height: 28 rows"),
+                    setting_item("side-player-width", "Side player min width: 100 cols"),
+                    setting_item("stacked-queue-height", "Stacked queue min height: 38 rows"),
+                    setting_item("wide-breakpoint", "Wide layout min width: 140 cols"),
                 ],
             }];
             page.state = LoadState::Ready;
