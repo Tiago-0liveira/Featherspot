@@ -68,6 +68,7 @@ impl fmt::Debug for ArtworkManager {
 impl ArtworkManager {
     /// Must be called after entering the alternate screen and before terminal event polling.
     pub fn new(mode: CliArtworkPreference) -> Self {
+        let mut mode = mode;
         let mut picker =
             Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((8, 16)));
         if mode == CliArtworkPreference::Blocks {
@@ -75,7 +76,7 @@ impl ArtworkManager {
         }
         let (fetch_tx, fetch_rx) = mpsc::sync_channel::<String>(8);
         let (download_tx, download_rx) = mpsc::channel();
-        thread::Builder::new()
+        if let Err(error) = thread::Builder::new()
             .name("mellowdeck-artwork".into())
             .spawn(move || {
                 let client = reqwest::blocking::Client::builder()
@@ -103,7 +104,10 @@ impl ArtworkManager {
                     }
                 }
             })
-            .ok();
+        {
+            tracing::error!(%error, "failed to spawn artwork download thread; disabling artwork");
+            mode = CliArtworkPreference::Off;
+        }
 
         let slots = [ArtworkPlacement::Header, ArtworkPlacement::Preview, ArtworkPlacement::Player]
             .into_iter()
@@ -228,7 +232,7 @@ impl ArtworkManager {
 fn image_slot(placement: ArtworkPlacement) -> ImageSlot {
     let (resize_tx, resize_rx) = mpsc::channel::<ResizeRequest>();
     let (result_tx, result_rx) = mpsc::channel();
-    thread::Builder::new()
+    if let Err(error) = thread::Builder::new()
         .name(format!("mellowdeck-artwork-{placement:?}"))
         .spawn(move || {
             while let Ok(request) = resize_rx.recv() {
@@ -237,7 +241,9 @@ fn image_slot(placement: ArtworkPlacement) -> ImageSlot {
                 }
             }
         })
-        .ok();
+    {
+        tracing::error!(%error, "failed to spawn artwork resize thread for {placement:?}");
+    }
     ImageSlot {
         resize_results: result_rx,
         protocol: ThreadProtocol::new(resize_tx, None),
