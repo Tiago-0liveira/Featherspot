@@ -54,6 +54,7 @@ mod windows {
     struct Host {
         player: Option<PlaybackWebView>,
         commands: mpsc::Receiver<LocalPlayerCommand>,
+        stdin_thread: Option<thread::JoinHandle<()>>,
     }
     impl Render for Host {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
@@ -61,20 +62,36 @@ mod windows {
         }
     }
 
+    impl Drop for Host {
+        fn drop(&mut self) {
+            drop(std::mem::replace(&mut self.commands, mpsc::channel().1));
+            if let Some(handle) = self.stdin_thread.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
     pub fn run() {
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            for line in io::stdin().lock().lines().map_while(Result::ok) {
-                if let Ok(command) = serde_json::from_str::<Command>(&line)
-                    && sender.send(command.into()).is_err()
-                {
-                    break;
+        let stdin_thread = thread::Builder::new()
+            .name("mellowdeck-player-host-stdin".into())
+            .spawn(move || {
+                for line in io::stdin().lock().lines().map_while(Result::ok) {
+                    if let Ok(command) = serde_json::from_str::<Command>(&line)
+                        && sender.send(command.into()).is_err()
+                    {
+                        break;
+                    }
                 }
-            }
-        });
+            })
+            .ok();
+        let mut receiver = Some(receiver);
+        let mut stdin_thread = stdin_thread;
         Application::new().run(move |cx: &mut App| {
             let bounds =
                 Bounds::new(gpui::point(px(-10_000.0), px(-10_000.0)), size(px(1.0), px(1.0)));
+            let mut receiver = receiver.take();
+            let mut stdin_thread = stdin_thread.take();
             let window_result = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -97,15 +114,21 @@ mod windows {
                             );
                             let _ = io::stdout().flush();
                             cx.quit();
-                            return cx.new(|_| Host { player: None, commands: receiver });
+                            return cx.new(|_| Host {
+                                player: None,
+                                commands: receiver.take().expect("commands receiver"),
+                                stdin_thread: stdin_thread.take(),
+                            });
                         }
                     };
+                    let host_receiver = receiver.take().expect("commands receiver");
+                    let host_stdin_thread = stdin_thread.take();
                     cx.new(|cx: &mut Context<Host>| {
                         cx.spawn(async move |host, cx| {
                             loop {
                                 cx.background_executor().timer(Duration::from_millis(25)).await;
                                 if !host
-                                    .update(cx, |host, _| {
+                                    .update(cx, |host, cx| {
                                         for command in host.commands.try_iter() {
                                             let shutdown =
                                                 matches!(command, LocalPlayerCommand::Shutdown);
@@ -113,6 +136,7 @@ mod windows {
                                                 let _ = player.send(&command);
                                             }
                                             if shutdown {
+                                                cx.quit();
                                                 return false;
                                             }
                                         }
@@ -123,9 +147,20 @@ mod windows {
                                     break;
                                 }
                             }
+                            let _ = host.update(cx, |host, cx| {
+                                drop(std::mem::replace(&mut host.commands, mpsc::channel().1));
+                                if let Some(handle) = host.stdin_thread.take() {
+                                    let _ = handle.join();
+                                }
+                                cx.quit();
+                            });
                         })
                         .detach();
-                        Host { player: Some(player), commands: receiver }
+                        Host {
+                            player: Some(player),
+                            commands: host_receiver,
+                            stdin_thread: host_stdin_thread,
+                        }
                     })
                 },
             );
