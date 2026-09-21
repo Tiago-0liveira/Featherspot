@@ -71,7 +71,8 @@ mod tests {
     use super::*;
     #[test]
     fn missing_and_future_files_fall_back() {
-        let root = std::env::temp_dir().join(format!("mellowdeck-session-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("mellowdeck-session-fallback-{}", std::process::id()));
         let store = CliSessionStore::new(&root);
         assert_eq!(store.load().volume, 50);
         fs::create_dir_all(&root).unwrap();
@@ -86,7 +87,8 @@ mod tests {
     }
     #[test]
     fn round_trip_clamps_volume() {
-        let root = std::env::temp_dir().join(format!("mellowdeck-session-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("mellowdeck-session-clamp-{}", std::process::id()));
         let store = CliSessionStore::new(&root);
         store.save(&CliSessionState { schema_version: 1, volume: 255, last_track: None }).unwrap();
         assert_eq!(store.load().volume, 100);

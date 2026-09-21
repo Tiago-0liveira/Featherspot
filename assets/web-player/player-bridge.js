@@ -58,13 +58,22 @@
     player.addListener("player_state_changed", (state) => {
       // A null state means playback moved to another device; the local device stays ready.
       if (!state) return;
-      const trackUri = state.track_window?.current_track?.uri;
+      const currentTrack = state.track_window?.current_track;
+      const trackUri = currentTrack?.uri;
+      const title = currentTrack?.name;
+      const artist = currentTrack?.artists?.[0]?.name;
+      const album = currentTrack?.album?.name;
+      const artworkUrl = currentTrack?.album?.images?.[0]?.url;
       emit({
         type: "state_changed",
         playing: !state.paused,
         position_ms: state.position,
         duration_ms: state.duration,
         track_uri: typeof trackUri === "string" && trackUri.startsWith("spotify:track:") ? trackUri : null,
+        title: typeof title === "string" ? title : null,
+        artist: typeof artist === "string" ? artist : null,
+        album: typeof album === "string" ? album : null,
+        artwork_url: typeof artworkUrl === "string" ? artworkUrl : null,
       });
     });
   }

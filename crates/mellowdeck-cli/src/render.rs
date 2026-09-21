@@ -494,8 +494,19 @@ fn render_queue(frame: &mut Frame<'_>, area: Rect, state: &mut AppState, hits: &
         " Now playing",
         Style::default().fg(SAGE).add_modifier(Modifier::BOLD),
     ))));
-    if let Some(now) = &state.queue_now {
-        rows.push(ListItem::new(format!(" ♪ {} — {}", now.title, now.subtitle)));
+    let now_playing = state
+        .queue_now
+        .as_ref()
+        .map(|now| (now.title.as_str(), now.subtitle.as_str()))
+        .or_else(|| {
+            if state.playback.track_uri.is_some() && !state.playback.title.is_empty() {
+                Some((state.playback.title.as_str(), state.playback.artist.as_str()))
+            } else {
+                None
+            }
+        });
+    if let Some((title, subtitle)) = now_playing {
+        rows.push(ListItem::new(format!(" ♪ {title} — {subtitle}")));
     } else {
         rows.push(ListItem::new(Span::styled(" Nothing playing", Style::default().fg(MUTED))));
     }

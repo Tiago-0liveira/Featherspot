@@ -47,11 +47,19 @@ fn main() {
                             position_ms,
                             duration_ms,
                             track_uri,
+                            title,
+                            artist,
+                            album,
+                            artwork_url,
                         } => mellowdeck_core::LocalPlayerEvent::StateChanged {
                             playing,
                             position_ms,
                             duration_ms,
                             track_uri,
+                            title,
+                            artist,
+                            album,
+                            artwork_url,
                         },
                         mellowdeck_playback::BridgeEvent::AuthenticationError { message } => {
                             tracing::warn!(%message, "local player reported AuthenticationError");

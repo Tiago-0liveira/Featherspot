@@ -87,6 +87,8 @@ impl ServiceHandle {
                 | Effect::PlayContext { .. }
                 | Effect::Enqueue(_)
                 | Effect::Transfer(_)
+                | Effect::RefreshPlayback
+                | Effect::RefreshQueue
         );
         if priority {
             self.priority.send(Request::Effect(effect)).map_err(channel_error)

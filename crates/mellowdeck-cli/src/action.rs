@@ -435,8 +435,38 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
             })
         }
         Action::TogglePlayback => vec![Effect::TogglePlayback],
-        Action::Previous => vec![Effect::Previous],
-        Action::Next => vec![Effect::Next],
+        Action::Previous => {
+            let current_pos = state.playback.progress_at(Instant::now());
+            if current_pos > 3_000 {
+                state.playback.progress_ms = 0;
+                state.playback.observed_at = Some(Instant::now());
+            } else if let Some(previous_playback) = state.playback_history.pop() {
+                if let Some(current_item) = state.playback_as_browse_item() {
+                    state.queue_upcoming.insert(0, current_item);
+                }
+                state.playback = previous_playback;
+                state.playback.progress_ms = 0;
+                state.playback.playing = true;
+                state.playback.observed_at = Some(Instant::now());
+                state.playback.cached_track = false;
+                state.queue_now = state.playback_as_browse_item();
+            } else {
+                state.playback.progress_ms = 0;
+                state.playback.observed_at = Some(Instant::now());
+            }
+            vec![Effect::Previous]
+        }
+        Action::Next => {
+            if !state.queue_upcoming.is_empty() {
+                state.push_playback_history();
+                let next_track = state.queue_upcoming.remove(0);
+                state.queue.selected =
+                    state.queue.selected.min(state.queue_upcoming.len().saturating_sub(1));
+                state.apply_track_to_playback(&next_track);
+                state.queue_now = Some(next_track);
+            }
+            vec![Effect::Next]
+        }
         Action::Seek(offset) => vec![Effect::Seek(offset)],
         Action::Volume(delta) => {
             state.playback.volume = state.playback.volume.saturating_add_signed(delta).min(100);
@@ -546,6 +576,9 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
                 });
                 return Vec::new();
             }
+            state.push_playback_history();
+            state.apply_track_to_playback(&item);
+            state.queue_now = Some(item.clone());
             if let Some(context) = item.context {
                 vec![Effect::PlayContext {
                     uri: context.uri,
@@ -949,5 +982,96 @@ mod tests {
                 .map(|position| ContextPosition { uri: "spotify:playlist:mix".into(), position }),
             restricted: false,
         }
+    }
+
+    #[test]
+    fn next_action_advances_queue_and_updates_playback() {
+        let mut state = AppState::default();
+        state.playback.track_uri = Some("spotify:track:current".into());
+        state.playback.title = "Current".into();
+        state.queue_upcoming = vec![
+            item(EntityKind::Track, "Upcoming 1", "spotify:track:up1", None),
+            item(EntityKind::Track, "Upcoming 2", "spotify:track:up2", None),
+        ];
+
+        let effects = reduce(&mut state, Action::Next);
+        assert_eq!(effects, vec![Effect::Next]);
+        assert_eq!(state.playback.track_uri.as_deref(), Some("spotify:track:up1"));
+        assert_eq!(state.playback.title, "Upcoming 1");
+        assert_eq!(state.queue_upcoming.len(), 1);
+        assert_eq!(state.queue_upcoming[0].title, "Upcoming 2");
+        assert_eq!(state.playback_history.len(), 1);
+        assert_eq!(state.playback_history[0].title, "Current");
+    }
+
+    #[test]
+    fn previous_action_rewinds_if_over_three_seconds() {
+        let mut state = AppState::default();
+        state.playback.track_uri = Some("spotify:track:current".into());
+        state.playback.title = "Current".into();
+        state.playback.duration_ms = 200_000;
+        state.playback.progress_ms = 10_000;
+        state.playback.playing = false;
+
+        let effects = reduce(&mut state, Action::Previous);
+        assert_eq!(effects, vec![Effect::Previous]);
+        assert_eq!(state.playback.progress_ms, 0);
+        assert_eq!(state.playback.title, "Current");
+    }
+
+    #[test]
+    fn previous_action_restores_from_history_if_under_three_seconds() {
+        let mut state = AppState::default();
+        state.playback.track_uri = Some("spotify:track:song1".into());
+        state.playback.title = "Song 1".into();
+        state.push_playback_history();
+
+        state.playback.track_uri = Some("spotify:track:song2".into());
+        state.playback.title = "Song 2".into();
+        state.playback.progress_ms = 1_000;
+        state.playback.playing = false;
+
+        let effects = reduce(&mut state, Action::Previous);
+        assert_eq!(effects, vec![Effect::Previous]);
+        assert_eq!(state.playback.track_uri.as_deref(), Some("spotify:track:song1"));
+        assert_eq!(state.playback.title, "Song 1");
+        assert_eq!(state.playback.progress_ms, 0);
+        assert!(state.playback_history.is_empty());
+        // Song 2 was prepended back to queue_upcoming so subsequent Next preserves it
+        assert_eq!(state.queue_upcoming.len(), 1);
+        assert_eq!(state.queue_upcoming[0].title, "Song 2");
+        assert_eq!(state.queue_now.as_ref().map(|n| n.title.as_str()), Some("Song 1"));
+    }
+
+    #[test]
+    fn next_action_when_queue_empty_does_not_push_to_history() {
+        let mut state = AppState::default();
+        state.playback.track_uri = Some("spotify:track:current".into());
+        state.playback.title = "Current".into();
+        state.queue_upcoming.clear();
+
+        let effects = reduce(&mut state, Action::Next);
+        assert_eq!(effects, vec![Effect::Next]);
+        assert_eq!(state.playback.title, "Current");
+        assert!(state.playback_history.is_empty());
+    }
+
+    #[test]
+    fn activate_track_optimistically_updates_playback() {
+        let mut state = AppState::default();
+        state.playback.track_uri = Some("spotify:track:initial".into());
+        state.playback.title = "Initial".into();
+        state.page = page_with(
+            Route::Home,
+            vec![item(EntityKind::Track, "Activated Track", "spotify:track:activated", None)],
+        );
+        state.page.cursor.selected = 0;
+
+        let effects = reduce(&mut state, Action::Activate);
+        assert!(matches!(effects.as_slice(), [Effect::PlayTrack { uri, .. }] if uri == "spotify:track:activated"));
+        assert_eq!(state.playback.track_uri.as_deref(), Some("spotify:track:activated"));
+        assert_eq!(state.playback.title, "Activated Track");
+        assert_eq!(state.playback_history.len(), 1);
+        assert_eq!(state.playback_history[0].title, "Initial");
     }
 }

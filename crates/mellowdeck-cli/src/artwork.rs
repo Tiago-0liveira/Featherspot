@@ -20,7 +20,7 @@ use ratatui_image::{
     thread::{ResizeRequest, ResizeResponse, ThreadProtocol},
 };
 
-const CACHE_CAPACITY: usize = 16;
+const CACHE_CAPACITY: usize = 32;
 
 struct Downloaded {
     url: String,
@@ -45,6 +45,7 @@ struct ImageSlot {
     resize_results: Receiver<Result<ResizeResponse, ratatui_image::errors::Errors>>,
     protocol: ThreadProtocol,
     current: Option<String>,
+    has_image: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -74,8 +75,8 @@ impl ArtworkManager {
         if mode == CliArtworkPreference::Blocks {
             picker.set_protocol_type(ProtocolType::Halfblocks);
         }
-        let (fetch_tx, fetch_rx) = mpsc::sync_channel::<String>(8);
-        let (download_tx, download_rx) = mpsc::sync_channel(32);
+        let (fetch_tx, fetch_rx) = mpsc::sync_channel::<String>(64);
+        let (download_tx, download_rx) = mpsc::sync_channel(64);
         if let Err(error) = thread::Builder::new()
             .name("mellowdeck-artwork".into())
             .spawn(move || {
@@ -141,7 +142,27 @@ impl ArtworkManager {
         for slot in self.slots.values_mut() {
             slot.protocol.empty_protocol();
             slot.current = None;
+            slot.has_image = false;
         }
+    }
+
+    pub fn prefetch(&mut self, url: &str) {
+        if self.mode == CliArtworkPreference::Off
+            || self.cache.contains_key(url)
+            || self.pending.contains(url)
+        {
+            return;
+        }
+        if self.failed.get(url).is_none_or(|retry| Instant::now() >= *retry)
+            && self.fetch.try_send(url.to_owned()).is_ok()
+        {
+            self.pending.insert(url.to_owned());
+        }
+    }
+
+    #[must_use]
+    pub fn is_cached(&self, url: &str) -> bool {
+        self.cache.contains_key(url)
     }
 
     pub fn render(
@@ -158,65 +179,98 @@ impl ArtworkManager {
             return;
         }
         let Some(url) = url else {
-            placeholder_widget(frame, area, placeholder);
-            return;
-        };
-        let Some(slot) = self.slots.get_mut(&placement) else {
-            placeholder_widget(frame, area, placeholder);
-            return;
-        };
-        if slot.current.as_deref() != Some(url) {
-            slot.current = Some(url.to_owned());
-            slot.protocol.empty_protocol();
-            if let Some(image) = self.cache.get(url) {
-                slot.protocol.replace_protocol(self.picker.new_resize_protocol(image.clone()));
-            } else if !self.pending.contains(url)
-                && self.failed.get(url).is_none_or(|retry| Instant::now() >= *retry)
-                && self.fetch.try_send(url.to_owned()).is_ok()
-            {
-                self.pending.insert(url.to_owned());
+            if let Some(slot) = self.slots.get_mut(&placement) {
+                slot.protocol.empty_protocol();
+                slot.current = None;
+                slot.has_image = false;
             }
+            placeholder_widget(frame, area, placeholder);
+            return;
+        };
+        let fetch_url = {
+            let Some(slot) = self.slots.get_mut(&placement) else {
+                placeholder_widget(frame, area, placeholder);
+                return;
+            };
+            if slot.current.as_deref() != Some(url) {
+                slot.current = Some(url.to_owned());
+                if let Some(image) = self.cache.get(url) {
+                    slot.protocol.replace_protocol(self.picker.new_resize_protocol(image.clone()));
+                    slot.has_image = true;
+                    self.touch(url);
+                    None
+                } else {
+                    Some(url.to_owned())
+                }
+            } else if slot.has_image {
+                self.touch(url);
+                None
+            } else {
+                None
+            }
+        };
+        if let Some(fetch_url) = fetch_url
+            && !self.pending.contains(&fetch_url)
+            && self.failed.get(&fetch_url).is_none_or(|retry| Instant::now() >= *retry)
+            && self.fetch.try_send(fetch_url.clone()).is_ok()
+        {
+            self.pending.insert(fetch_url);
         }
         self.poll();
-        if self.cache.contains_key(url) {
-            if let Some(slot) = self.slots.get_mut(&placement) {
+        if let Some(slot) = self.slots.get_mut(&placement) {
+            if slot.has_image {
                 frame.render_stateful_widget(
                     StatefulImage::new().resize(Resize::Fit(None)),
                     area,
                     &mut slot.protocol,
                 );
+            } else {
+                placeholder_widget(frame, area, placeholder);
             }
         } else {
             placeholder_widget(frame, area, placeholder);
         }
     }
 
+    fn touch(&mut self, url: &str) {
+        if self.cache.contains_key(url) {
+            self.order.retain(|u| u != url);
+            self.order.push_back(url.to_owned());
+        }
+    }
+
     fn poll(&mut self) {
         while let Ok(downloaded) = self.downloaded.try_recv() {
             self.pending.remove(&downloaded.url);
-            match downloaded.image {
-                Ok(image) => {
-                    if !self.cache.contains_key(&downloaded.url)
-                        && self.cache.len() >= CACHE_CAPACITY
-                        && let Some(oldest) = self.order.pop_front()
-                    {
-                        self.cache.remove(&oldest);
-                    }
-                    self.order.retain(|url| url != &downloaded.url);
-                    self.order.push_back(downloaded.url.clone());
-                    for slot in self
-                        .slots
-                        .values_mut()
-                        .filter(|slot| slot.current.as_deref() == Some(downloaded.url.as_str()))
-                    {
-                        self.failed.remove(&downloaded.url);
-                        slot.protocol
-                            .replace_protocol(self.picker.new_resize_protocol(image.clone()));
-                    }
-                    self.cache.insert(downloaded.url, image);
+            if let Ok(image) = downloaded.image {
+                if !self.cache.contains_key(&downloaded.url)
+                    && self.cache.len() >= CACHE_CAPACITY
+                    && let Some(oldest) = self.order.pop_front()
+                {
+                    self.cache.remove(&oldest);
                 }
-                Err(_) => {
-                    self.failed.insert(downloaded.url, Instant::now() + Duration::from_secs(10));
+                self.order.retain(|url| url != &downloaded.url);
+                self.order.push_back(downloaded.url.clone());
+                for slot in self
+                    .slots
+                    .values_mut()
+                    .filter(|slot| slot.current.as_deref() == Some(downloaded.url.as_str()))
+                {
+                    self.failed.remove(&downloaded.url);
+                    slot.protocol
+                        .replace_protocol(self.picker.new_resize_protocol(image.clone()));
+                    slot.has_image = true;
+                }
+                self.cache.insert(downloaded.url, image);
+            } else {
+                self.failed.insert(downloaded.url.clone(), Instant::now() + Duration::from_secs(10));
+                for slot in self
+                    .slots
+                    .values_mut()
+                    .filter(|slot| slot.current.as_deref() == Some(downloaded.url.as_str()))
+                {
+                    slot.protocol.empty_protocol();
+                    slot.has_image = false;
                 }
             }
         }
@@ -249,6 +303,7 @@ fn image_slot(placement: ArtworkPlacement) -> ImageSlot {
         resize_results: result_rx,
         protocol: ThreadProtocol::new(resize_tx, None),
         current: None,
+        has_image: false,
     }
 }
 
@@ -260,4 +315,54 @@ fn placeholder_widget(frame: &mut Frame<'_>, area: Rect, placeholder: &str) {
             .block(Block::default().borders(Borders::ALL)),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefetch_skips_when_off() {
+        let mut manager = ArtworkManager::new(CliArtworkPreference::Off);
+        manager.prefetch("https://example.com/image.jpg");
+        assert!(!manager.is_cached("https://example.com/image.jpg"));
+        assert!(!manager.pending.contains("https://example.com/image.jpg"));
+    }
+
+    #[test]
+    fn prefetch_marks_pending_when_active() {
+        let mut manager = ArtworkManager::new(CliArtworkPreference::Auto);
+        manager.prefetch("https://example.com/image.jpg");
+        assert!(manager.pending.contains("https://example.com/image.jpg"));
+        // Second prefetch is a no-op
+        manager.prefetch("https://example.com/image.jpg");
+        assert!(manager.pending.contains("https://example.com/image.jpg"));
+    }
+
+    #[test]
+    fn clear_placement_resets_slot_state() {
+        let mut manager = ArtworkManager::new(CliArtworkPreference::Auto);
+        if let Some(slot) = manager.slots.get_mut(&ArtworkPlacement::Player) {
+            slot.has_image = true;
+            slot.current = Some("https://example.com/art.jpg".into());
+        }
+        manager.clear_placement();
+        let slot = manager.slots.get(&ArtworkPlacement::Player).unwrap();
+        assert!(!slot.has_image);
+        assert!(slot.current.is_none());
+    }
+
+    #[test]
+    fn touch_promotes_cached_url() {
+        let mut manager = ArtworkManager::new(CliArtworkPreference::Auto);
+        let img = image::DynamicImage::new_rgb8(1, 1);
+        manager.cache.insert("https://example.com/1.jpg".into(), img.clone());
+        manager.cache.insert("https://example.com/2.jpg".into(), img);
+        manager.order.push_back("https://example.com/1.jpg".into());
+        manager.order.push_back("https://example.com/2.jpg".into());
+
+        manager.touch("https://example.com/1.jpg");
+        assert_eq!(manager.order.back().unwrap(), "https://example.com/1.jpg");
+        assert_eq!(manager.order.front().unwrap(), "https://example.com/2.jpg");
+    }
 }

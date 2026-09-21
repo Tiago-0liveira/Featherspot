@@ -325,7 +325,11 @@ impl PlaybackState {
         } else {
             0
         };
-        self.progress_ms.saturating_add(elapsed).min(self.duration_ms)
+        if self.duration_ms > 0 {
+            self.progress_ms.saturating_add(elapsed).min(self.duration_ms)
+        } else {
+            self.progress_ms.saturating_add(elapsed)
+        }
     }
 }
 
@@ -385,6 +389,7 @@ pub struct AppState {
     /// A device chosen from the Devices page must not be replaced automatically.
     pub device_selected_by_user: bool,
     pub response_log: VecDeque<u64>,
+    pub playback_history: Vec<PlaybackState>,
 }
 
 impl Default for AppState {
@@ -416,6 +421,7 @@ impl Default for AppState {
             selected_device_id: None,
             device_selected_by_user: false,
             response_log: VecDeque::new(),
+            playback_history: Vec::new(),
         }
     }
 }
@@ -496,11 +502,79 @@ impl AppState {
         }
         true
     }
+    pub fn push_playback_history(&mut self) {
+        if let Some(uri) = &self.playback.track_uri
+            && !self.playback.title.is_empty()
+        {
+            if self.playback_history.last().and_then(|p| p.track_uri.as_ref()) == Some(uri) {
+                return;
+            }
+            if self.playback_history.len() >= 50 {
+                self.playback_history.remove(0);
+            }
+            self.playback_history.push(self.playback.clone());
+        }
+    }
+    #[must_use]
+    pub fn playback_as_browse_item(&self) -> Option<BrowseItem> {
+        let uri = self.playback.track_uri.clone()?;
+        if self.playback.title.is_empty() {
+            return None;
+        }
+        Some(BrowseItem {
+            id: uri.clone(),
+            kind: EntityKind::Track,
+            title: self.playback.title.clone(),
+            subtitle: self.playback.artist.clone(),
+            metadata: String::new(),
+            uri: Some(uri),
+            external_url: None,
+            artwork_url: self.playback.artwork_url.clone(),
+            artists: self.playback.artists.clone(),
+            album: self
+                .playback
+                .album_uri
+                .clone()
+                .map(|album_uri| (self.playback.album.clone(), album_uri)),
+            duration_ms: if self.playback.duration_ms > 0 {
+                Some(self.playback.duration_ms)
+            } else {
+                None
+            },
+            available: true,
+            context: None,
+            restricted: false,
+        })
+    }
+    pub fn apply_track_to_playback(&mut self, item: &BrowseItem) {
+        self.playback.track_uri.clone_from(&item.uri);
+        self.playback.title.clone_from(&item.title);
+        self.playback.artist.clone_from(&item.subtitle);
+        self.playback.artists = if item.artists.is_empty() && !item.subtitle.is_empty() {
+            vec![(item.subtitle.clone(), None)]
+        } else {
+            item.artists.clone()
+        };
+        if let Some((album_name, album_uri)) = &item.album {
+            self.playback.album.clone_from(album_name);
+            self.playback.album_uri = Some(album_uri.clone());
+        } else {
+            self.playback.album.clear();
+            self.playback.album_uri = None;
+        }
+        self.playback.artwork_url.clone_from(&item.artwork_url);
+        self.playback.duration_ms = item.duration_ms.unwrap_or(0);
+        self.playback.progress_ms = 0;
+        self.playback.playing = true;
+        self.playback.observed_at = Some(Instant::now());
+        self.playback.cached_track = false;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn stale_page_response_cannot_replace_new_navigation() {
@@ -520,5 +594,103 @@ mod tests {
         cursor.move_by(-10, 30, 5);
         assert_eq!(cursor.selected, 2);
         assert_eq!(cursor.offset, 2);
+    }
+
+    #[test]
+    fn playback_history_records_and_caps_at_fifty() {
+        let mut state = AppState::default();
+        state.playback.track_uri = Some("spotify:track:initial".into());
+        state.playback.title = "Initial Song".into();
+
+        for i in 0..60 {
+            state.push_playback_history();
+            state.playback.track_uri = Some(format!("spotify:track:{i}"));
+            state.playback.title = format!("Song {i}");
+        }
+        assert_eq!(state.playback_history.len(), 50);
+        assert_eq!(state.playback_history.first().unwrap().title, "Song 9");
+        assert_eq!(state.playback_history.last().unwrap().title, "Song 58");
+    }
+
+    #[test]
+    fn apply_track_to_playback_populates_fields() {
+        let mut state = AppState::default();
+        let item = BrowseItem {
+            id: "track1".into(),
+            kind: EntityKind::Track,
+            title: "Test Track".into(),
+            subtitle: "Test Artist".into(),
+            metadata: String::new(),
+            uri: Some("spotify:track:123".into()),
+            external_url: None,
+            artwork_url: Some("https://example.com/art.jpg".into()),
+            artists: vec![("Test Artist".into(), None)],
+            album: Some(("Test Album".into(), "spotify:album:456".into())),
+            duration_ms: Some(210_000),
+            available: true,
+            context: None,
+            restricted: false,
+        };
+        state.apply_track_to_playback(&item);
+        assert_eq!(state.playback.track_uri.as_deref(), Some("spotify:track:123"));
+        assert_eq!(state.playback.title, "Test Track");
+        assert_eq!(state.playback.artist, "Test Artist");
+        assert_eq!(state.playback.album, "Test Album");
+        assert_eq!(state.playback.album_uri.as_deref(), Some("spotify:album:456"));
+        assert_eq!(state.playback.artwork_url.as_deref(), Some("https://example.com/art.jpg"));
+        assert_eq!(state.playback.duration_ms, 210_000);
+        assert_eq!(state.playback.progress_ms, 0);
+        assert!(state.playback.playing);
+    }
+
+    #[test]
+    fn playback_history_deduplicates_consecutive_entries() {
+        let mut state = AppState::default();
+        state.playback.track_uri = Some("spotify:track:song1".into());
+        state.playback.title = "Song 1".into();
+
+        state.push_playback_history();
+        assert_eq!(state.playback_history.len(), 1);
+
+        // Pushing identical URI again should be a no-op
+        state.push_playback_history();
+        assert_eq!(state.playback_history.len(), 1);
+
+        state.playback.track_uri = Some("spotify:track:song2".into());
+        state.playback.title = "Song 2".into();
+        state.push_playback_history();
+        assert_eq!(state.playback_history.len(), 2);
+    }
+
+    #[test]
+    fn progress_at_interpolates_when_duration_is_zero() {
+        let start = Instant::now();
+        let playback = PlaybackState {
+            playing: true,
+            duration_ms: 0,
+            progress_ms: 1_000,
+            observed_at: Some(start),
+            ..PlaybackState::default()
+        };
+
+        let later = start + Duration::from_millis(500);
+        assert!(playback.progress_at(later) >= 1_500);
+    }
+
+    #[test]
+    fn playback_as_browse_item_creates_valid_item() {
+        let mut state = AppState::default();
+        assert!(state.playback_as_browse_item().is_none());
+
+        state.playback.track_uri = Some("spotify:track:abc".into());
+        state.playback.title = "My Song".into();
+        state.playback.artist = "My Artist".into();
+        state.playback.duration_ms = 180_000;
+
+        let item = state.playback_as_browse_item().unwrap();
+        assert_eq!(item.uri.as_deref(), Some("spotify:track:abc"));
+        assert_eq!(item.title, "My Song");
+        assert_eq!(item.subtitle, "My Artist");
+        assert_eq!(item.duration_ms, Some(180_000));
     }
 }

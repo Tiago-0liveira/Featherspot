@@ -25,6 +25,14 @@ pub enum BridgeEvent {
         position_ms: u64,
         duration_ms: u64,
         track_uri: Option<SpotifyUri>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        artist: Option<String>,
+        #[serde(default)]
+        album: Option<String>,
+        #[serde(default)]
+        artwork_url: Option<String>,
     },
     AuthenticationError {
         message: String,
@@ -76,6 +84,44 @@ mod tests {
         assert_eq!(
             event.payload,
             BridgeEvent::Ready { device_id: DeviceId::parse("abc123").unwrap() }
+        );
+    }
+
+    #[test]
+    fn parses_state_changed_with_metadata() {
+        let json = r#"{"version":1,"id":8,"payload":{"type":"state_changed","playing":true,"position_ms":1000,"duration_ms":200000,"track_uri":"spotify:track:6rqhFgbbKwnb9MLmUQDhG6","title":"Song","artist":"Artist","album":"Album","artwork_url":"https://example.com/art.jpg"}}"#;
+        let event = parse_event(json).unwrap();
+        assert_eq!(
+            event.payload,
+            BridgeEvent::StateChanged {
+                playing: true,
+                position_ms: 1000,
+                duration_ms: 200_000,
+                track_uri: Some("spotify:track:6rqhFgbbKwnb9MLmUQDhG6".parse().unwrap()),
+                title: Some("Song".into()),
+                artist: Some("Artist".into()),
+                album: Some("Album".into()),
+                artwork_url: Some("https://example.com/art.jpg".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_state_changed_without_metadata() {
+        let json = r#"{"version":1,"id":9,"payload":{"type":"state_changed","playing":false,"position_ms":0,"duration_ms":180000,"track_uri":null}}"#;
+        let event = parse_event(json).unwrap();
+        assert_eq!(
+            event.payload,
+            BridgeEvent::StateChanged {
+                playing: false,
+                position_ms: 0,
+                duration_ms: 180_000,
+                track_uri: None,
+                title: None,
+                artist: None,
+                album: None,
+                artwork_url: None,
+            }
         );
     }
 

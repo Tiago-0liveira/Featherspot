@@ -163,21 +163,38 @@ fn run() -> Result<()> {
         &mut state,
     )?;
     let mut playback_polled = Instant::now();
+    let mut fast_polls = FastPollTracker::default();
 
     while !state.quit {
+        for item in state.queue_upcoming.iter().take(5) {
+            if let Some(url) = &item.artwork_url {
+                artwork.prefetch(url);
+            }
+        }
         artwork.set_mode(state.artwork);
         terminal.draw(|frame| render_with_artwork(frame, &mut state, &mut hits, &mut artwork))?;
         while let Some(response) = worker.try_recv() {
-            handle_response(response, &worker, &local_player, &mut session, &mut state)?;
+            handle_response(
+                response,
+                &worker,
+                &local_player,
+                &mut session,
+                &mut state,
+                &mut fast_polls,
+            )?;
         }
-        handle_local_player_events(&local_player, &worker, &mut state)?;
+        handle_local_player_events(&local_player, &worker, &mut state, &mut fast_polls)?;
         let interval =
             if state.playback.playing { Duration::from_secs(5) } else { Duration::from_secs(15) };
-        if playback_polled.elapsed() >= interval {
+        if fast_polls.should_poll(Instant::now()) {
+            worker.send(Effect::RefreshPlayback)?;
+            playback_polled = Instant::now();
+        } else if playback_polled.elapsed() >= interval {
             worker.send(Effect::RefreshPlayback)?;
             playback_polled = Instant::now();
         }
         if event::poll(Duration::from_millis(50)).map_err(io_error)? {
+            let prev_track_uri = state.playback.track_uri.clone();
             let effects = match event::read().map_err(io_error)? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => dispatch_key(&mut state, key),
                 Event::Mouse(mouse) => dispatch_mouse(&mut state, &mut hits, mouse, Instant::now()),
@@ -188,6 +205,23 @@ fn run() -> Result<()> {
                 }
                 _ => Vec::new(),
             };
+            let is_track_change = effects.iter().any(|e| {
+                matches!(
+                    e,
+                    Effect::Next
+                        | Effect::Previous
+                        | Effect::PlayTrack { .. }
+                        | Effect::PlayContext { .. }
+                )
+            });
+            if is_track_change {
+                let expected = if state.playback.track_uri != prev_track_uri {
+                    state.playback.track_uri.clone()
+                } else {
+                    None
+                };
+                fast_polls.schedule(prev_track_uri, expected);
+            }
             let save_settings = effects.iter().any(|effect| matches!(effect, Effect::SaveSettings));
             send_effects(&worker, &local_player, effects, &mut state)?;
             if save_settings {
@@ -252,13 +286,14 @@ fn send_effects(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn handle_response(
     response: ServiceResponse,
     worker: &ServiceHandle,
     local_player: &BackgroundLocalPlayer,
     session: &mut Session,
     state: &mut AppState,
+    fast_polls: &mut FastPollTracker,
 ) -> Result<()> {
     match response {
         ServiceResponse::Page(mut page) => {
@@ -292,7 +327,15 @@ fn handle_response(
             }
         }
         ServiceResponse::Playback(playback) => {
+            if !fast_polls.should_accept_playback(playback.track_uri.as_deref()) {
+                return Ok(());
+            }
             if playback.track_uri.is_some() {
+                if state.playback.track_uri.is_some()
+                    && state.playback.track_uri != playback.track_uri
+                {
+                    state.push_playback_history();
+                }
                 state.playback = PlaybackState {
                     track_uri: playback.track_uri,
                     context_uri: playback.context_uri,
@@ -342,7 +385,12 @@ fn handle_response(
                         tracing::warn!(%error, "failed to persist CLI session state");
                     }
                 }
-                worker.send(Effect::RefreshPlayback)?;
+                if !matches!(
+                    effect,
+                    Effect::Shuffle(_) | Effect::Repeat(_) | Effect::Volume(_)
+                ) {
+                    worker.send(Effect::RefreshPlayback)?;
+                }
                 if matches!(
                     effect,
                     Effect::Enqueue(_)
@@ -398,6 +446,7 @@ fn handle_response(
                 }
             }
             Err(error) => {
+                fast_polls.cancel();
                 state.notice = Some(Notice { kind: NoticeKind::Error, text: actionable(&error) });
                 if matches!(effect, Effect::LoadPage { .. }) {
                     state.page.loading_more = false;
@@ -424,6 +473,7 @@ fn handle_local_player_events(
     local_player: &BackgroundLocalPlayer,
     worker: &ServiceHandle,
     state: &mut AppState,
+    fast_polls: &mut FastPollTracker,
 ) -> Result<()> {
     while let Some(event) = local_player.try_next_event()? {
         match event {
@@ -457,15 +507,43 @@ fn handle_local_player_events(
                         .into(),
                 });
             }
-            LocalPlayerEvent::StateChanged { playing, position_ms, duration_ms, track_uri } => {
+            LocalPlayerEvent::StateChanged {
+                playing,
+                position_ms,
+                duration_ms,
+                track_uri,
+                title,
+                artist,
+                album,
+                artwork_url,
+            } => {
                 if local_player_selected(state) {
+                    if let Some(ref uri) = track_uri {
+                        let uri_str = uri.to_string();
+                        if state.playback.track_uri.as_deref() != Some(&uri_str) {
+                            state.push_playback_history();
+                            fast_polls.should_accept_playback(Some(&uri_str));
+                        }
+                        state.playback.track_uri = Some(uri_str);
+                    }
                     state.playback.playing = playing;
                     state.playback.progress_ms = position_ms.min(duration_ms);
                     state.playback.duration_ms = duration_ms;
                     state.playback.observed_at = Some(Instant::now());
-                    if let Some(track_uri) = track_uri {
-                        state.playback.track_uri = Some(track_uri.to_string());
+                    if let Some(title) = title {
+                        state.playback.title = title;
                     }
+                    if let Some(artist) = artist {
+                        state.playback.artist = artist.clone();
+                        state.playback.artists = vec![(artist, None)];
+                    }
+                    if let Some(album) = album {
+                        state.playback.album = album;
+                    }
+                    if let Some(artwork_url) = artwork_url {
+                        state.playback.artwork_url = Some(artwork_url);
+                    }
+                    state.playback.cached_track = false;
                 }
             }
             LocalPlayerEvent::AuthenticationError(message)
@@ -550,6 +628,115 @@ mod device_selection_tests {
         playback(&mut state, "remote", true);
         local_ready(&mut state, "local");
         assert_eq!(state.selected_device_id.as_deref(), Some("manual"));
+    }
+}
+
+#[cfg(test)]
+mod fast_poll_tests {
+    use super::*;
+
+    #[test]
+    fn schedule_creates_three_deadlines() {
+        let mut tracker = FastPollTracker::default();
+        tracker.schedule(Some("spotify:track:old".into()), Some("spotify:track:new".into()));
+        assert_eq!(tracker.deadlines.len(), 3);
+        assert_eq!(tracker.stale_track_uris, vec!["spotify:track:old"]);
+        assert_eq!(tracker.expected_track_uri.as_deref(), Some("spotify:track:new"));
+    }
+
+    #[test]
+    fn rejects_stale_track_and_accepts_expected_track() {
+        let mut tracker = FastPollTracker::default();
+        tracker.schedule(Some("spotify:track:old".into()), Some("spotify:track:new".into()));
+
+        assert!(!tracker.should_accept_playback(Some("spotify:track:old")));
+        assert_eq!(tracker.deadlines.len(), 3);
+
+        assert!(tracker.should_accept_playback(Some("spotify:track:new")));
+        assert!(tracker.deadlines.is_empty());
+        assert!(tracker.expected_track_uri.is_none());
+
+        assert!(tracker.should_accept_playback(Some("spotify:track:old")));
+    }
+
+    #[test]
+    fn accepts_different_track_when_expected_is_none() {
+        let mut tracker = FastPollTracker::default();
+        tracker.schedule(Some("spotify:track:old".into()), None);
+
+        assert!(!tracker.should_accept_playback(Some("spotify:track:old")));
+
+        assert!(tracker.should_accept_playback(Some("spotify:track:different")));
+        assert!(tracker.deadlines.is_empty());
+    }
+
+    #[test]
+    fn accepts_after_all_deadlines_expire() {
+        let mut tracker = FastPollTracker::default();
+        tracker.schedule(Some("spotify:track:old".into()), Some("spotify:track:new".into()));
+
+        let future = Instant::now() + Duration::from_secs(10);
+        assert!(tracker.should_poll(future));
+        assert!(tracker.should_poll(future));
+        assert!(tracker.should_poll(future));
+        assert!(!tracker.should_poll(future));
+        assert!(tracker.deadlines.is_empty());
+
+        assert!(tracker.should_accept_playback_at(Some("spotify:track:old"), future));
+    }
+
+    #[test]
+    fn rapid_skips_reject_all_stale_tracks() {
+        let mut tracker = FastPollTracker::default();
+        tracker.schedule(Some("spotify:track:1".into()), Some("spotify:track:2".into()));
+        tracker.schedule(Some("spotify:track:2".into()), Some("spotify:track:3".into()));
+
+        assert_eq!(tracker.stale_track_uris, vec!["spotify:track:1", "spotify:track:2"]);
+        assert_eq!(tracker.expected_track_uri.as_deref(), Some("spotify:track:3"));
+
+        // Both track 1 and track 2 in-flight responses must be rejected
+        assert!(!tracker.should_accept_playback(Some("spotify:track:1")));
+        assert!(!tracker.should_accept_playback(Some("spotify:track:2")));
+
+        // Only track 3 is accepted
+        assert!(tracker.should_accept_playback(Some("spotify:track:3")));
+        assert!(!tracker.is_active(Instant::now()));
+    }
+
+    #[test]
+    fn rejects_stale_response_while_last_poll_in_flight() {
+        let mut tracker = FastPollTracker::default();
+        tracker.schedule(Some("spotify:track:old".into()), Some("spotify:track:new".into()));
+
+        let t1 = Instant::now() + Duration::from_millis(500);
+        let t2 = Instant::now() + Duration::from_millis(1100);
+        let t3 = Instant::now() + Duration::from_millis(2100);
+        assert!(tracker.should_poll(t1));
+        assert!(tracker.should_poll(t2));
+        assert!(tracker.should_poll(t3));
+        assert!(!tracker.should_poll(t3));
+
+        // Deadlines are empty, but expiry is 3500ms so tracker is still active!
+        assert!(tracker.deadlines.is_empty());
+        assert!(tracker.is_active(t3));
+
+        // In-flight response returning old track must be rejected!
+        assert!(!tracker.should_accept_playback_at(Some("spotify:track:old"), t3));
+
+        // Expected track is accepted and clears tracker
+        assert!(tracker.should_accept_playback_at(Some("spotify:track:new"), t3));
+        assert!(!tracker.is_active(t3));
+    }
+
+    #[test]
+    fn cancel_on_command_error_allows_immediate_acceptance() {
+        let mut tracker = FastPollTracker::default();
+        tracker.schedule(Some("spotify:track:old".into()), Some("spotify:track:new".into()));
+        assert!(!tracker.should_accept_playback(Some("spotify:track:old")));
+
+        tracker.cancel();
+        assert!(!tracker.is_active(Instant::now()));
+        assert!(tracker.should_accept_playback(Some("spotify:track:old")));
     }
 }
 
@@ -686,6 +873,85 @@ fn io_error(error: io::Error) -> AppError {
     let message = error.to_string();
     drop(error);
     AppError::new(ErrorKind::Storage, message)
+}
+
+#[derive(Debug, Default)]
+struct FastPollTracker {
+    expected_track_uri: Option<String>,
+    stale_track_uris: Vec<String>,
+    deadlines: Vec<Instant>,
+    expiry: Option<Instant>,
+}
+
+impl FastPollTracker {
+    fn schedule(&mut self, previous_uri: Option<String>, expected_uri: Option<String>) {
+        let now = Instant::now();
+        if let Some(prev) = previous_uri {
+            if !self.stale_track_uris.contains(&prev) {
+                self.stale_track_uris.push(prev);
+            }
+        }
+        self.expected_track_uri = expected_uri;
+        self.deadlines = vec![
+            now + Duration::from_millis(400),
+            now + Duration::from_millis(1000),
+            now + Duration::from_millis(2000),
+        ];
+        self.expiry = Some(now + Duration::from_millis(3500));
+    }
+
+    fn should_poll(&mut self, now: Instant) -> bool {
+        if let Some(&first) = self.deadlines.first() {
+            if now >= first {
+                self.deadlines.remove(0);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn is_active(&self, now: Instant) -> bool {
+        if !self.deadlines.is_empty() {
+            return true;
+        }
+        self.expiry.is_some_and(|exp| now < exp)
+    }
+
+    fn cancel(&mut self) {
+        self.expected_track_uri = None;
+        self.stale_track_uris.clear();
+        self.deadlines.clear();
+        self.expiry = None;
+    }
+
+    fn should_accept_playback(&mut self, incoming_uri: Option<&str>) -> bool {
+        self.should_accept_playback_at(incoming_uri, Instant::now())
+    }
+
+    fn should_accept_playback_at(&mut self, incoming_uri: Option<&str>, now: Instant) -> bool {
+        if !self.is_active(now) {
+            self.cancel();
+            return true;
+        }
+        if let Some(incoming) = incoming_uri {
+            if self.stale_track_uris.iter().any(|stale| stale == incoming) {
+                return false;
+            }
+        }
+        if let Some(expected) = &self.expected_track_uri {
+            if incoming_uri == Some(expected.as_str()) {
+                self.cancel();
+                true
+            } else {
+                false
+            }
+        } else if incoming_uri.is_some() {
+            self.cancel();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 struct TerminalGuard {

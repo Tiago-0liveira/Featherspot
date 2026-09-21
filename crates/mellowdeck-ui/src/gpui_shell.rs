@@ -583,13 +583,32 @@ impl MellowdeckShell {
                 self.local_player_status = Some("Local playback is unavailable in WebView2".into());
                 self.play_pending_on_connect(cx);
             }
-            LocalPlayerEvent::StateChanged { playing, position_ms, duration_ms, track_uri } => {
+            LocalPlayerEvent::StateChanged {
+                playing,
+                position_ms,
+                duration_ms,
+                track_uri,
+                title,
+                artist,
+                album,
+                artwork_url,
+            } => {
                 if let LoadStatus::Loaded(playback) = &mut self.playback {
                     playback.playing = playing;
                     playback.progress_ms = position_ms;
                     playback.duration_ms = duration_ms;
+                    if let Some(title) = title {
+                        playback.title = title;
+                    }
+                    if let Some(artist) = artist {
+                        playback.subtitle.clone_from(&artist);
+                        playback.artists = vec![(artist, None)];
+                    }
+                    let _ = album;
+                    if let Some(artwork_url) = artwork_url {
+                        playback.artwork_url = Some(artwork_url);
+                    }
                 }
-                // The SDK reports timing only; fetch title and artwork when the track changes.
                 if track_uri != self.local_track_uri {
                     self.local_track_uri = track_uri;
                     self.refresh_playback(cx);
