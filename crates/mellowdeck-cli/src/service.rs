@@ -1,5 +1,5 @@
 use std::{
-    sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
+    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
     thread,
     time::Duration,
 };
@@ -34,7 +34,7 @@ enum Request {
 
 #[derive(Debug)]
 pub struct ServiceHandle {
-    priority: Sender<Request>,
+    priority: SyncSender<Request>,
     browse: SyncSender<Request>,
     responses: Receiver<ServiceResponse>,
     worker: Option<thread::JoinHandle<()>>,
@@ -47,9 +47,9 @@ impl ServiceHandle {
     /// Returns an error if the HTTP client or worker thread cannot be created.
     pub fn start(access_token: String) -> Result<Self> {
         let api = SpotifyWebApi::new()?;
-        let (priority_tx, priority_rx) = mpsc::channel();
+        let (priority_tx, priority_rx) = mpsc::sync_channel(64);
         let (browse_tx, browse_rx) = mpsc::sync_channel(8);
-        let (response_tx, response_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::sync_channel(64);
         let worker = thread::Builder::new()
             .name("mellowdeck-spotify".into())
             .spawn(move || {
@@ -124,7 +124,7 @@ fn worker_loop(
     mut token: String,
     priority: &Receiver<Request>,
     browse: &Receiver<Request>,
-    responses: &Sender<ServiceResponse>,
+    responses: &SyncSender<ServiceResponse>,
 ) {
     loop {
         let request = match priority.try_recv() {

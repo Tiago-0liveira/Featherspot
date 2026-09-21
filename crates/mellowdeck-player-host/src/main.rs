@@ -64,7 +64,7 @@ mod windows {
 
     impl Drop for Host {
         fn drop(&mut self) {
-            drop(std::mem::replace(&mut self.commands, mpsc::channel().1));
+            drop(std::mem::replace(&mut self.commands, mpsc::sync_channel(1).1));
             if let Some(handle) = self.stdin_thread.take() {
                 let _ = handle.join();
             }
@@ -72,7 +72,7 @@ mod windows {
     }
 
     pub fn run() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(64);
         let stdin_thread = thread::Builder::new()
             .name("mellowdeck-player-host-stdin".into())
             .spawn(move || {
@@ -148,7 +148,7 @@ mod windows {
                                 }
                             }
                             let _ = host.update(cx, |host, cx| {
-                                drop(std::mem::replace(&mut host.commands, mpsc::channel().1));
+                                drop(std::mem::replace(&mut host.commands, mpsc::sync_channel(1).1));
                                 if let Some(handle) = host.stdin_thread.take() {
                                     let _ = handle.join();
                                 }
