@@ -404,25 +404,17 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
     } else {
         1
     };
-    let mut lines = if has_detail {
-        let kind_label = match state.page.route {
-            Route::Artist { .. } => "Artist",
-            Route::Playlist { .. } => "Playlist",
-            _ => "Album",
-        };
-        vec![Line::from(vec![Span::styled(
-            format!(" {kind_label} "),
+    if has_detail {
+        render_detail_content_header(frame, area, padding, state, hits);
+        return;
+    }
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!(" {} ", state.page.route.label()),
             Style::default().fg(PEACH).add_modifier(Modifier::BOLD),
-        )])]
-    } else {
-        vec![Line::from(vec![
-            Span::styled(
-                format!(" {} ", state.page.route.label()),
-                Style::default().fg(PEACH).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(state.page.subtitle.clone(), Style::default().fg(MUTED)),
-        ])]
-    };
+        ),
+        Span::styled(state.page.subtitle.clone(), Style::default().fg(MUTED)),
+    ])];
     match state.page.route {
         Route::Search => {
             let field = format!(
@@ -478,9 +470,6 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
                 ),
             ]));
         }
-        Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. } => {
-            render_detail_content_header(&mut lines, area, padding, state, hits);
-        }
         _ => {}
     }
     frame.render_widget(
@@ -493,110 +482,158 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
     );
 }
 
-fn render_detail_content_header<'a>(
-    lines: &mut Vec<Line<'a>>,
+fn render_detail_content_header(
+    frame: &mut Frame<'_>,
     area: Rect,
     padding: u16,
-    state: &'a AppState,
+    state: &AppState,
     hits: &mut HitMap,
 ) {
+    frame.render_widget(Block::default().style(Style::default().bg(INK)), area);
+
+    let content_x = area.x + padding;
+    let content_w = area.width.saturating_sub(padding);
+    if content_w == 0 {
+        return;
+    }
+
+    // Row 0: Entity tag badge (Peach bold, non-duplicated)
+    let kind_label = match state.page.route {
+        Route::Artist { .. } => "Artist",
+        Route::Playlist { .. } => "Playlist",
+        _ => "Album",
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {kind_label} "),
+            Style::default().fg(PEACH).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x: content_x, y: area.y, width: content_w, height: 1 },
+    );
+
+    // Row 1: Type icon and title
     let icon = match state.page.route {
         Route::Artist { .. } => "  ◉  ",
         Route::Playlist { .. } => "  ≡  ",
         _ => "  ▣  ",
     };
-    lines.push(Line::from(vec![
-        Span::styled(icon, Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            &state.page.title,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    if state.page.subtitle.is_empty() {
-        lines.push(Line::from(""));
-    } else {
-        lines.push(Line::from(Span::styled(&state.page.subtitle, Style::default().fg(MUTED))));
-    }
-    lines.push(Line::from(""));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(icon, Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &state.page.title,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect { x: content_x, y: area.y + 1, width: content_w, height: 1 },
+    );
 
-    let avail_width = area.width.saturating_sub(padding);
-    let (play_label, shuffle_label, spotify_label) = if avail_width >= 70 {
+    // Row 2: Subtitle metadata (single non-duplicated line)
+    if !state.page.subtitle.is_empty() && area.height >= 3 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &state.page.subtitle,
+                Style::default().fg(MUTED),
+            ))),
+            Rect { x: content_x, y: area.y + 2, width: content_w, height: 1 },
+        );
+    }
+
+    // Row 4: Action buttons
+    if area.height >= 5 {
+        render_detail_buttons(frame, area, content_x, content_w, state, hits);
+    }
+
+    // Row 6: Keybind hints moved to the bottom of the header section
+    if area.height >= 7 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " Enter plays · p play · S shuffle · o spotify · a queues · i inspects · right-click actions ",
+                Style::default().fg(SAGE),
+            ))),
+            Rect { x: content_x, y: area.y + 6, width: content_w, height: 1 },
+        );
+    }
+}
+
+fn render_detail_buttons(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    content_x: u16,
+    content_w: u16,
+    state: &AppState,
+    hits: &mut HitMap,
+) {
+    let (play_label, shuffle_label, spotify_label) = if content_w >= 67 {
         (
             match state.page.route {
-                Route::Artist { .. } => " [ ▶ Play artist ] ",
-                Route::Playlist { .. } => " [ ▶ Play playlist ] ",
-                _ => " [ ▶ Play album ] ",
+                Route::Artist { .. } => "[ ▶ Play artist ]",
+                Route::Playlist { .. } => "[ ▶ Play playlist ]",
+                _ => "[ ▶ Play album ]",
             },
-            " [ ⇄ Play with shuffle ] ",
-            " [ ↗ Open in Spotify ] ",
+            "[ ⇄ Play with shuffle ]",
+            "[ ↗ Open in Spotify ]",
         )
     } else {
-        (" [ ▶ Play ] ", " [ ⇄ Shuffle ] ", " [ ↗ Spotify ] ")
+        ("[ ▶ Play ]", "[ ⇄ Shuffle ]", "[ ↗ Spotify ]")
     };
 
-    let mut button_spans = vec![
-        Span::styled(
-            play_label,
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(63, 55, 84))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            shuffle_label,
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(45, 42, 60))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-
-    let has_external = state.page.external_url.is_some();
-    if has_external {
-        button_spans.push(Span::raw("  "));
-        button_spans.push(Span::styled(
-            spotify_label,
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(45, 42, 60))
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    lines.push(Line::from(button_spans));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " Enter plays · p play · S shuffle · o spotify · a queues · i inspects · right-click actions ",
-        Style::default().fg(SAGE),
-    )));
+    let play_w = u16::try_from(play_label.chars().count()).unwrap_or(10);
+    let shuffle_w = u16::try_from(shuffle_label.chars().count()).unwrap_or(13);
+    let spotify_w = u16::try_from(spotify_label.chars().count()).unwrap_or(13);
 
     let btn_y = area.y + 4;
-    let play_w = u16::try_from(play_label.chars().count()).unwrap_or(12);
-    let play_rect = Rect {
-        x: area.x + padding,
-        y: btn_y,
-        width: play_w,
-        height: 1,
-    };
-    hits.add(play_rect, HitTarget::DetailPlay);
+    let mut cur_x = content_x;
 
-    let shuffle_w = u16::try_from(shuffle_label.chars().count()).unwrap_or(15);
-    let shuffle_rect = Rect {
-        x: play_rect.x + play_rect.width + 2,
-        y: btn_y,
-        width: shuffle_w,
-        height: 1,
-    };
-    hits.add(shuffle_rect, HitTarget::DetailShuffle);
+    // 1. Play button
+    if cur_x + play_w <= area.x + area.width {
+        let play_rect = Rect { x: cur_x, y: btn_y, width: play_w, height: 1 };
+        frame.render_widget(
+            Paragraph::new(play_label).style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(63, 55, 84))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            play_rect,
+        );
+        hits.add(play_rect, HitTarget::DetailPlay);
+        cur_x += play_w + 2;
+    }
 
-    if has_external {
-        let spotify_w = u16::try_from(spotify_label.chars().count()).unwrap_or(15);
-        let spotify_rect = Rect {
-            x: shuffle_rect.x + shuffle_rect.width + 2,
-            y: btn_y,
-            width: spotify_w,
-            height: 1,
-        };
+    // 2. Play with shuffle button
+    if cur_x + shuffle_w <= area.x + area.width {
+        let shuffle_rect = Rect { x: cur_x, y: btn_y, width: shuffle_w, height: 1 };
+        frame.render_widget(
+            Paragraph::new(shuffle_label).style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(45, 42, 60))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            shuffle_rect,
+        );
+        hits.add(shuffle_rect, HitTarget::DetailShuffle);
+        cur_x += shuffle_w + 2;
+    }
+
+    // 3. Open in Spotify button (rendered whenever external_url is present or derivable)
+    let has_external = state.page.external_url.is_some()
+        || matches!(
+            state.page.route,
+            Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
+        );
+    if has_external && cur_x + spotify_w <= area.x + area.width {
+        let spotify_rect = Rect { x: cur_x, y: btn_y, width: spotify_w, height: 1 };
+        frame.render_widget(
+            Paragraph::new(spotify_label).style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(45, 42, 60))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            spotify_rect,
+        );
         hits.add(spotify_rect, HitTarget::DetailOpenSpotify);
     }
 }
@@ -1257,7 +1294,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 ),
                 (
                     "Browse",
-                    "1-4 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · q Queue · d devices · i inspector",
+                    "1-4 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · p play · S shuffle · o Spotify · q Queue · d devices · i inspector",
                 ),
                 (
                     "Mouse",
@@ -1612,10 +1649,21 @@ mod tests {
         let spotify_rect = spotify_hit.unwrap();
         assert_eq!(play_rect.y, shuffle_rect.y);
         assert_eq!(shuffle_rect.y, spotify_rect.y);
-        assert!(play_rect.x + play_rect.width <= shuffle_rect.x);
-        assert!(shuffle_rect.x + shuffle_rect.width <= spotify_rect.x);
+        assert_eq!(play_rect.x + play_rect.width + 2, shuffle_rect.x);
+        assert_eq!(shuffle_rect.x + shuffle_rect.width + 2, spotify_rect.x);
 
-        // 2. Verify buffer text
+        let buf = terminal.backend().buffer();
+        // Verify exact cell alignment for button boundaries
+        assert_eq!(buf[(play_rect.x, play_rect.y)].symbol(), "[");
+        assert_eq!(buf[(play_rect.x + play_rect.width - 1, play_rect.y)].symbol(), "]");
+        assert_eq!(buf[(play_rect.x + play_rect.width, play_rect.y)].symbol(), " ");
+        assert_eq!(buf[(shuffle_rect.x, shuffle_rect.y)].symbol(), "[");
+        assert_eq!(buf[(shuffle_rect.x + shuffle_rect.width - 1, shuffle_rect.y)].symbol(), "]");
+        assert_eq!(buf[(shuffle_rect.x + shuffle_rect.width, shuffle_rect.y)].symbol(), " ");
+        assert_eq!(buf[(spotify_rect.x, spotify_rect.y)].symbol(), "[");
+        assert_eq!(buf[(spotify_rect.x + spotify_rect.width - 1, spotify_rect.y)].symbol(), "]");
+
+        // 2. Verify buffer text & de-duplication
         let output = terminal
             .backend()
             .buffer()
@@ -1629,5 +1677,72 @@ mod tests {
         assert!(output.contains("Open in Spotify"));
         assert!(output.contains("Tracks"));
         assert!(output.contains("Airbag"));
+    }
+
+    #[test]
+    fn detail_page_long_title_preserves_button_geometry() {
+        let backend = TestBackend::new(80, 35);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        let long_title = "A Very Long Album Title That Exceeds Normal Screen Width And Would Wrap In Paragraph".to_string();
+        state.page = PageState::loading(
+            Route::Album {
+                uri: "spotify:album:long".into(),
+                title: long_title.clone(),
+            },
+            1,
+        );
+        state.page.title = long_title;
+        state.page.subtitle = "by Pink Floyd · 1973 · 10 tracks".into();
+        state.page.state = LoadState::Ready;
+
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+
+        let play_hit = hits.rect_for(&HitTarget::DetailPlay);
+        let shuffle_hit = hits.rect_for(&HitTarget::DetailShuffle);
+        let spotify_hit = hits.rect_for(&HitTarget::DetailOpenSpotify);
+        assert!(play_hit.is_some());
+        assert!(shuffle_hit.is_some());
+        assert!(spotify_hit.is_some());
+
+        let play_rect = play_hit.unwrap();
+        let buf = terminal.backend().buffer();
+        // Button row must strictly remain on row 6 (area.y(2) + 4) despite very long title
+        assert_eq!(play_rect.y, 6);
+        assert_eq!(buf[(play_rect.x, play_rect.y)].symbol(), "[");
+    }
+
+    #[test]
+    fn artist_detail_header_renders_songs_and_artist_play_labels() {
+        let backend = TestBackend::new(120, 35);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.page = PageState::loading(
+            Route::Artist {
+                uri: "spotify:artist:radiohead".into(),
+                title: "Radiohead".into(),
+            },
+            1,
+        );
+        state.page.title = "Radiohead".into();
+        state.page.subtitle = "50 tracks".into();
+        state.page.state = LoadState::Ready;
+
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+
+        let output = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(output.contains("Play artist"));
+        assert!(output.contains("Play with shuffle"));
+        assert!(output.contains("Open in Spotify"));
+        assert!(output.contains("Songs"));
     }
 }

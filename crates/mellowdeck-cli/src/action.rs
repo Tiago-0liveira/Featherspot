@@ -195,7 +195,16 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char('[') => Action::Previous,
             KeyCode::Char(']') => Action::Next,
             KeyCode::Char('-') => Action::Volume(-5),
-            KeyCode::Char('+' | '=') => Action::Volume(5),
+            KeyCode::Char('p' | 'P') if has_detail_actions(state) => Action::PlayDetailContext,
+            KeyCode::Char('S') if has_detail_actions(state) => {
+                Action::PlayDetailContextWithShuffle
+            }
+            KeyCode::Char('s')
+                if key.modifiers.contains(KeyModifiers::SHIFT) && has_detail_actions(state) =>
+            {
+                Action::PlayDetailContextWithShuffle
+            }
+            KeyCode::Char('o' | 'O') if has_detail_actions(state) => Action::OpenDetailSpotify,
             KeyCode::Char('s') => Action::Shuffle,
             KeyCode::Char('r') => Action::Repeat,
             KeyCode::Char('q') => Action::Navigate(Route::Queue),
@@ -206,11 +215,6 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char('m') if state.layout == crate::state::LayoutMode::Compact => {
                 Action::OpenActions
             }
-            KeyCode::Char('p' | 'P') if has_detail_actions(state) => Action::PlayDetailContext,
-            KeyCode::Char('S') if has_detail_actions(state) => {
-                Action::PlayDetailContextWithShuffle
-            }
-            KeyCode::Char('o' | 'O') if has_detail_actions(state) => Action::OpenDetailSpotify,
             _ => return Vec::new(),
         }
     };
@@ -577,7 +581,11 @@ fn detail_context_uri(state: &AppState) -> Option<String> {
 }
 
 fn detail_external_url(state: &AppState) -> Option<String> {
-    state.page.external_url.clone()
+    state.page.external_url.clone().or_else(|| {
+        detail_context_uri(state).and_then(|uri| {
+            uri.parse::<mellowdeck_core::ids::SpotifyUri>().ok().map(|parsed| parsed.web_url())
+        })
+    })
 }
 
 fn load_route(state: &mut AppState, route: Route) -> Vec<Effect> {
@@ -1396,6 +1404,52 @@ mod tests {
                 },
                 Effect::Shuffle(true),
             ]
+        );
+
+        // Shift+s (with lowercase 's' + SHIFT modifier)
+        let shuffle_shift_s = dispatch_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SHIFT),
+        );
+        assert_eq!(
+            shuffle_shift_s,
+            vec![
+                Effect::PlayTrack {
+                    uri: "spotify:album:1".into(),
+                    device_id: Some("dev-1".into()),
+                },
+                Effect::Shuffle(true),
+            ]
+        );
+
+        // Plain 's' without SHIFT in detail route must toggle global shuffle, NOT restart context
+        state.playback.shuffle = false;
+        let toggle_shuffle = dispatch_key(&mut state, key(KeyCode::Char('s')));
+        assert_eq!(toggle_shuffle, vec![Effect::Shuffle(true)]);
+
+        // Artist detail route without explicit external_url derives web URL when 'o' pressed
+        let mut artist_state = AppState::default();
+        artist_state.page = PageState::loading(
+            Route::Artist {
+                uri: "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb".into(),
+                title: "Radiohead".into(),
+            },
+            1,
+        );
+        assert_eq!(
+            artist_state.page.uri.as_deref(),
+            Some("spotify:artist:4Z8W4fKeB5YxbusRsdQVPb")
+        );
+        assert_eq!(
+            artist_state.page.external_url.as_deref(),
+            Some("https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb")
+        );
+        let artist_spotify_fx = dispatch_key(&mut artist_state, key(KeyCode::Char('o')));
+        assert_eq!(
+            artist_spotify_fx,
+            vec![Effect::OpenExternal(
+                "https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb".into()
+            )]
         );
 
         let spotify_fx = dispatch_key(&mut state, key(KeyCode::Char('o')));

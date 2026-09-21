@@ -99,7 +99,7 @@ pub enum SpotifyItemKind {
 }
 
 impl SpotifyItemKind {
-    fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Track => "track",
             Self::Album => "album",
@@ -135,6 +135,10 @@ impl SpotifyUri {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn web_url(&self) -> String {
+        format!("https://open.spotify.com/{}/{}", self.kind.as_str(), self.id)
     }
 }
 

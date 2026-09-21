@@ -399,7 +399,9 @@ fn apply_detail(page: &mut PageState, detail: SpotifyDetailPage) {
         _ => "Tracks",
     };
     page.uri = Some(detail.uri.clone());
-    page.external_url.clone_from(&detail.external_url);
+    page.external_url = detail
+        .external_url
+        .or_else(|| detail.uri.parse::<SpotifyUri>().ok().map(|parsed| parsed.web_url()));
     page.next_offset = detail.items.next_offset;
     page.sections = vec![typed_section(primary, detail.items.items, context.as_deref())];
     if !detail.releases.is_empty() {
