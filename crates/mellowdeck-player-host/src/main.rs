@@ -52,7 +52,7 @@ mod windows {
     }
 
     struct Host {
-        player: PlaybackWebView,
+        player: Option<PlaybackWebView>,
         commands: mpsc::Receiver<LocalPlayerCommand>,
     }
     impl Render for Host {
@@ -75,7 +75,7 @@ mod windows {
         Application::new().run(move |cx: &mut App| {
             let bounds =
                 Bounds::new(gpui::point(px(-10_000.0), px(-10_000.0)), size(px(1.0), px(1.0)));
-            let _ = cx.open_window(
+            let window_result = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     show: false,
@@ -83,11 +83,23 @@ mod windows {
                     ..WindowOptions::default()
                 },
                 move |window, cx| {
-                    let player = create_playback_webview(window, |message| {
+                    let player = match create_playback_webview(window, |message| {
                         let _ = writeln!(io::stdout(), "{message}");
                         let _ = io::stdout().flush();
-                    })
-                    .expect("WebView2 player host could not create its native child");
+                    }) {
+                        Ok(player) => player,
+                        Err(error) => {
+                            let reason = error.to_string();
+                            let _ = writeln!(
+                                io::stdout(),
+                                r#"{{"version":1,"id":0,"payload":{{"type":"unavailable","reason":"{}"}}}}"#,
+                                reason.replace('"', "\\\"")
+                            );
+                            let _ = io::stdout().flush();
+                            cx.quit();
+                            return cx.new(|_| Host { player: None, commands: receiver });
+                        }
+                    };
                     cx.new(|cx: &mut Context<Host>| {
                         cx.spawn(async move |host, cx| {
                             loop {
@@ -97,7 +109,9 @@ mod windows {
                                         for command in host.commands.try_iter() {
                                             let shutdown =
                                                 matches!(command, LocalPlayerCommand::Shutdown);
-                                            let _ = host.player.send(&command);
+                                            if let Some(player) = &host.player {
+                                                let _ = player.send(&command);
+                                            }
                                             if shutdown {
                                                 return false;
                                             }
@@ -111,10 +125,20 @@ mod windows {
                             }
                         })
                         .detach();
-                        Host { player, commands: receiver }
+                        Host { player: Some(player), commands: receiver }
                     })
                 },
             );
+            if let Err(error) = window_result {
+                let reason = error.to_string();
+                let _ = writeln!(
+                    io::stdout(),
+                    r#"{{"version":1,"id":0,"payload":{{"type":"unavailable","reason":"{}"}}}}"#,
+                    reason.replace('"', "\\\"")
+                );
+                let _ = io::stdout().flush();
+                cx.quit();
+            }
         });
     }
 }
@@ -128,3 +152,21 @@ fn main() {
 fn main() {
     eprintln!("mellowdeck-player-host is supported on Windows only");
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unavailable_event_serialization() {
+        let reason = "WebView2 runtime missing".to_string();
+        let json = format!(
+            r#"{{"version":1,"id":0,"payload":{{"type":"unavailable","reason":"{}"}}}}"#,
+            reason.replace('"', "\\\"")
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(parsed["version"], 1);
+        assert_eq!(parsed["id"], 0);
+        assert_eq!(parsed["payload"]["type"], "unavailable");
+        assert_eq!(parsed["payload"]["reason"], "WebView2 runtime missing");
+    }
+}
+
