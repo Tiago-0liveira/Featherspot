@@ -730,13 +730,19 @@ fn render_player_vertical(
 
     let show_album = deck.height >= 14 && !state.playback.album.is_empty();
     let num_controls_rows = if show_album { 6 } else { 5 };
-    let art_h = deck
+    let max_art_h = deck
         .height
         .saturating_sub(num_controls_rows)
-        .clamp(4, 9)
+        .clamp(4, 10)
         .min(deck.height.saturating_sub(num_controls_rows));
+    let max_art_w = inner.width.saturating_sub(2);
 
-    let art_w = (inner.width.saturating_sub(4)).clamp(6, 24).min(inner.width);
+    let (art_w, art_h) = if let Some(ref mgr) = artwork {
+        mgr.square_cell_size(max_art_w, max_art_h)
+    } else {
+        crate::artwork::square_cell_size_with_font(max_art_w, max_art_h, 8, 16)
+    };
+
     let art_x = inner.x.saturating_add((inner.width.saturating_sub(art_w)) / 2);
     let art_area = Rect { x: art_x, y: deck.y, width: art_w, height: art_h };
 
@@ -1915,5 +1921,36 @@ mod tests {
         assert!(hits.rect_for(&HitTarget::PlayerNext).is_some());
         assert!(hits.rect_for(&HitTarget::PlayerShuffle).is_some());
         assert!(hits.rect_for(&HitTarget::PlayerRepeat).is_some());
+    }
+
+    #[test]
+    fn side_player_track_avatar_is_centered() {
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.playback.title = "Side Track".into();
+        state.playback.artist = "Side Artist".into();
+        state.playback.album = "Side Album".into();
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // In 140x24: body width is 140. Player width is 44 (clamped).
+        // Player pane area: x = 96, width = 44. Inner area: x = 97, width = 42.
+        // Center of inner player pane is 97 + 21 = 118.
+        let mut found_symbol = false;
+        for y in 2..15 {
+            for x in 96..140 {
+                let symbol = buffer[(x, y)].symbol();
+                if symbol == "♪" {
+                    assert!(
+                        (116..=120).contains(&x),
+                        "Avatar placeholder at (x={x}, y={y}) is not centered in player inner area (97..139, center 118)"
+                    );
+                    found_symbol = true;
+                }
+            }
+        }
+        assert!(found_symbol, "Expected placeholder ♪ to be rendered in deck");
     }
 }
