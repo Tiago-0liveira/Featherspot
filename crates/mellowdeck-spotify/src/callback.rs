@@ -51,33 +51,36 @@ impl CallbackServer {
         let deadline = Instant::now() + self.timeout;
         loop {
             match self.listener.accept() {
-                Ok((mut stream, _)) => match read_callback(&mut stream) {
-                    Ok(callback) => match attempt.validate_callback(&callback) {
-                        Ok(code) => {
-                            respond(
-                                &mut stream,
-                                200,
-                                "Authorization complete. You may close this window.",
-                            );
-                            return Ok(code);
-                        }
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    match read_callback(&mut stream) {
+                        Ok(callback) => match attempt.validate_callback(&callback) {
+                            Ok(code) => {
+                                respond(
+                                    &mut stream,
+                                    200,
+                                    "Authorization complete. You may close this window.",
+                                );
+                                return Ok(code);
+                            }
+                            Err(error) => {
+                                respond(&mut stream, 400, "Authorization callback was rejected.");
+                                if callback
+                                    .query_pairs()
+                                    .any(|(key, value)| key == "state" && value == attempt.state)
+                                {
+                                    return Err(error);
+                                }
+                            }
+                        },
                         Err(error) => {
-                            respond(&mut stream, 400, "Authorization callback was rejected.");
-                            if callback
-                                .query_pairs()
-                                .any(|(key, value)| key == "state" && value == attempt.state)
-                            {
+                            respond(&mut stream, 400, "Malformed authorization callback.");
+                            if Instant::now() >= deadline {
                                 return Err(error);
                             }
                         }
-                    },
-                    Err(error) => {
-                        respond(&mut stream, 400, "Malformed authorization callback.");
-                        if Instant::now() >= deadline {
-                            return Err(error);
-                        }
                     }
-                },
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
                         return Err(AppError::new(
