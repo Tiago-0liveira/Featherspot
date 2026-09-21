@@ -173,22 +173,28 @@ impl BackgroundLocalPlayer {
     ///
     /// Returns an error if the event subscription has been poisoned.
     pub fn try_next_event(&self) -> Result<Option<LocalPlayerEvent>> {
-        match self.events.lock().map_err(|_| poisoned())?.try_recv() {
-            Ok(event) => {
-                if matches!(event, LocalPlayerEvent::Ready { .. }) {
-                    *self.ready.lock().map_err(|_| poisoned())? = true;
-                } else if matches!(
-                    event,
-                    LocalPlayerEvent::Unavailable
-                        | LocalPlayerEvent::AuthenticationError(_)
-                        | LocalPlayerEvent::AccountError(_)
-                ) {
-                    *self.ready.lock().map_err(|_| poisoned())? = false;
-                }
-                Ok(Some(event))
+        let maybe_event = {
+            let events = self.events.lock().map_err(|_| poisoned())?;
+            match events.try_recv() {
+                Ok(event) => Some(event),
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
             }
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => Ok(None),
+        };
+
+        if let Some(event) = maybe_event {
+            if matches!(event, LocalPlayerEvent::Ready { .. }) {
+                *self.ready.lock().map_err(|_| poisoned())? = true;
+            } else if matches!(
+                event,
+                LocalPlayerEvent::Unavailable
+                    | LocalPlayerEvent::AuthenticationError(_)
+                    | LocalPlayerEvent::AccountError(_)
+            ) {
+                *self.ready.lock().map_err(|_| poisoned())? = false;
+            }
+            return Ok(Some(event));
         }
+        Ok(None)
     }
 
     /// Returns whether the SDK has registered a local device.
