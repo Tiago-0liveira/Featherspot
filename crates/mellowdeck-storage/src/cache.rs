@@ -219,7 +219,9 @@ fn millis(time: SystemTime) -> Result<i64> {
 fn from_millis(value: i64) -> Result<SystemTime> {
     let value = u64::try_from(value)
         .map_err(|_| AppError::new(ErrorKind::Storage, "stored timestamp is invalid"))?;
-    Ok(UNIX_EPOCH + Duration::from_millis(value))
+    UNIX_EPOCH
+        .checked_add(Duration::from_millis(value))
+        .ok_or_else(|| AppError::new(ErrorKind::Storage, "stored timestamp exceeds valid range"))
 }
 
 fn storage_error(error: rusqlite::Error) -> AppError {
@@ -277,5 +279,17 @@ mod tests {
         block_on(cache.write("first".into(), entry(8))).unwrap();
         block_on(cache.write("second".into(), entry(8))).unwrap();
         assert!(block_on(cache.trim_to(8)).unwrap() <= 8);
+    }
+
+    #[test]
+    fn from_millis_handles_boundaries_and_invalid_values() {
+        assert!(from_millis(i64::MAX).is_err());
+        assert!(from_millis(-1).is_err());
+        assert_eq!(from_millis(0).unwrap(), UNIX_EPOCH);
+        let sample = 1_700_000_000_000_i64;
+        assert_eq!(
+            from_millis(sample).unwrap(),
+            UNIX_EPOCH + Duration::from_millis(sample as u64)
+        );
     }
 }
