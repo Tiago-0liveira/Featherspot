@@ -186,10 +186,17 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
         Effect::Shuffle(value) => {
             ServiceResponse::Command { effect, result: api.shuffle(token, value) }
         }
-        Effect::Repeat(value) => ServiceResponse::Command {
-            effect,
-            result: api.repeat(token, ["off", "context", "track"][usize::from(value)]),
-        },
+        Effect::Repeat(value) => {
+            let mode = match value {
+                1 => "context",
+                2 => "track",
+                _ => "off",
+            };
+            ServiceResponse::Command {
+                effect,
+                result: api.repeat(token, mode),
+            }
+        }
         Effect::PlayTrack { uri, device_id } => ServiceResponse::Command {
             effect,
             result: api.play_uri_on_device(token, &uri, device_id.as_deref()),
@@ -529,4 +536,46 @@ fn setting_item(id: &str, title: &str) -> BrowseItem {
 
 fn channel_error<T: std::fmt::Display>(error: T) -> AppError {
     AppError::new(ErrorKind::Unavailable, format!("background worker stopped: {error}"))
+}
+
+/// Maps a repeat effect numeric value to Spotify's repeat mode string.
+#[must_use]
+pub const fn repeat_mode(value: u8) -> &'static str {
+    match value {
+        1 => "context",
+        2 => "track",
+        _ => "off",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeat_mode_maps_values_and_out_of_bounds_to_off() {
+        assert_eq!(repeat_mode(0), "off");
+        assert_eq!(repeat_mode(1), "context");
+        assert_eq!(repeat_mode(2), "track");
+        assert_eq!(repeat_mode(3), "off");
+        assert_eq!(repeat_mode(4), "off");
+        assert_eq!(repeat_mode(255), "off");
+    }
+
+    #[test]
+    fn repeat_effect_pattern_matching_does_not_panic_and_maps_properly() {
+        for value in 0..=255 {
+            let mode = match value {
+                1 => "context",
+                2 => "track",
+                _ => "off",
+            };
+            assert_eq!(mode, repeat_mode(value));
+            match value {
+                1 => assert_eq!(mode, "context"),
+                2 => assert_eq!(mode, "track"),
+                _ => assert_eq!(mode, "off"),
+            }
+        }
+    }
 }
