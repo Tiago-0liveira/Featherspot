@@ -60,6 +60,9 @@ impl CliSessionStore {
         })
         .map_err(io::Error::other)?;
         fs::write(&temporary, encoded)?;
+        if self.path.exists() {
+            let _ = fs::remove_file(&self.path);
+        }
         fs::rename(temporary, &self.path)
     }
 }
@@ -87,6 +90,39 @@ mod tests {
         let store = CliSessionStore::new(&root);
         store.save(&CliSessionState { schema_version: 1, volume: 255, last_track: None }).unwrap();
         assert_eq!(store.load().volume, 100);
+        let _ = fs::remove_file(root.join("cli-session.json"));
+        let _ = fs::remove_dir(root);
+    }
+    #[test]
+    fn multiple_saves_to_same_path_succeed_and_update_content() {
+        let root =
+            std::env::temp_dir().join(format!("mellowdeck-session-multi-{}", std::process::id()));
+        let store = CliSessionStore::new(&root);
+        let first = CliSessionState { schema_version: 1, volume: 40, last_track: None };
+        store.save(&first).unwrap();
+        assert_eq!(store.load().volume, 40);
+
+        let second = CliSessionState {
+            schema_version: 1,
+            volume: 80,
+            last_track: Some(PersistedTrack {
+                uri: "spotify:track:123".into(),
+                title: "Track 1".into(),
+                artist: "Artist 1".into(),
+                artists: vec![("Artist 1".into(), None)],
+                album: "Album 1".into(),
+                album_uri: None,
+                artwork_url: None,
+                duration_ms: 200_000,
+            }),
+        };
+        store.save(&second).unwrap();
+        assert_eq!(store.load(), second);
+
+        let third = CliSessionState { schema_version: 1, volume: 60, last_track: None };
+        store.save(&third).unwrap();
+        assert_eq!(store.load(), third);
+
         let _ = fs::remove_file(root.join("cli-session.json"));
         let _ = fs::remove_dir(root);
     }
