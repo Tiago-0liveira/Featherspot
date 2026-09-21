@@ -71,6 +71,7 @@ mod windows {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn run() {
         let (sender, receiver) = mpsc::sync_channel(64);
         let stdin_thread = thread::Builder::new()

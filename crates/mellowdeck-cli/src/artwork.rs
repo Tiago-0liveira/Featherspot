@@ -184,7 +184,9 @@ impl ArtworkManager {
                 slot.current = None;
                 slot.has_image = false;
             }
-            placeholder_widget(frame, area, placeholder);
+            if placement != ArtworkPlacement::Preview {
+                placeholder_widget(frame, area, placeholder);
+            }
             return;
         };
         let fetch_url = {
@@ -308,6 +310,9 @@ fn image_slot(placement: ArtworkPlacement) -> ImageSlot {
 }
 
 fn placeholder_widget(frame: &mut Frame<'_>, area: Rect, placeholder: &str) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
     frame.render_widget(
         Paragraph::new(placeholder)
             .centered()

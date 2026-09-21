@@ -198,12 +198,20 @@ impl SpotifyWebApi {
         if access_token.is_empty() {
             return Err(AppError::new(ErrorKind::Authentication, "the active session is empty"));
         }
-        Ok(SpotifyHome {
-            recently_played: section(self.recently_played(access_token)),
-            top_artists: section(self.top_artists(access_token)),
-            top_tracks: section(self.top_tracks(access_token)),
-            saved_albums: section(self.saved_albums(access_token, 4)),
-            playlists: section(self.playlists(access_token, 4)),
+        std::thread::scope(|s| {
+            let recently_played = s.spawn(|| section(self.recently_played(access_token)));
+            let top_artists = s.spawn(|| section(self.top_artists(access_token)));
+            let top_tracks = s.spawn(|| section(self.top_tracks(access_token)));
+            let saved_albums = s.spawn(|| section(self.saved_albums(access_token, 4)));
+            let playlists = s.spawn(|| section(self.playlists(access_token, 4)));
+
+            Ok(SpotifyHome {
+                recently_played: recently_played.join().unwrap_or_default(),
+                top_artists: top_artists.join().unwrap_or_default(),
+                top_tracks: top_tracks.join().unwrap_or_default(),
+                saved_albums: saved_albums.join().unwrap_or_default(),
+                playlists: playlists.join().unwrap_or_default(),
+            })
         })
     }
 
@@ -216,9 +224,14 @@ impl SpotifyWebApi {
         if access_token.is_empty() {
             return Err(AppError::new(ErrorKind::Authentication, "the active session is empty"));
         }
-        Ok(SpotifyLibrary {
-            albums: section(self.saved_albums(access_token, 50)),
-            playlists: section(self.playlists(access_token, 50)),
+        std::thread::scope(|s| {
+            let albums = s.spawn(|| section(self.saved_albums(access_token, 50)));
+            let playlists = s.spawn(|| section(self.playlists(access_token, 50)));
+
+            Ok(SpotifyLibrary {
+                albums: albums.join().unwrap_or_default(),
+                playlists: playlists.join().unwrap_or_default(),
+            })
         })
     }
 

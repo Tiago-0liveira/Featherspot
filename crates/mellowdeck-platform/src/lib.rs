@@ -191,10 +191,7 @@ impl BackgroundLocalPlayer {
     pub fn try_next_event(&self) -> Result<Option<LocalPlayerEvent>> {
         let maybe_event = {
             let events = self.events.lock().map_err(|_| poisoned())?;
-            match events.try_recv() {
-                Ok(event) => Some(event),
-                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
-            }
+            events.try_recv().ok()
         };
 
         if let Some(event) = maybe_event {
@@ -276,6 +273,9 @@ fn local_command_json(command: LocalPlayerCommand) -> String {
 impl AppPaths {
     /// Discovers the per-user application locations. Composition roots should use
     /// this instead of reading platform environment variables themselves.
+    ///
+    /// # Errors
+    /// Returns an error if the home or data directory cannot be determined.
     pub fn discover() -> Result<Self> {
         #[cfg(target_os = "windows")]
         let root =

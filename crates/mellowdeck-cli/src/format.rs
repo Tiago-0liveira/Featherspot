@@ -10,7 +10,7 @@ pub fn compact_count(value: u64) -> String {
             return format!("{:>5}", format!("{}.{:01}{suffix}", tenths / 10, tenths % 10));
         }
     }
-    format!("{:>5}", value)
+    format!("{value:>5}")
 }
 
 /// Keeps Spotify's typed release data presentation-free while accepting only valid precisions.

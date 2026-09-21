@@ -59,17 +59,17 @@ impl JsonSettingsStore {
         file.sync_all().map_err(io_error)?;
 
         let had_existing = self.path.exists();
+        if had_existing && backup.exists() {
+            fs::remove_file(&backup).map_err(io_error)?;
+        }
         if had_existing {
-            if backup.exists() {
-                fs::remove_file(&backup).map_err(io_error)?;
-            }
             fs::rename(&self.path, &backup).map_err(io_error)?;
         }
         if let Err(error) = fs::rename(&temporary, &self.path) {
-            if had_existing {
-                if let Err(rollback_error) = fs::rename(&backup, &self.path) {
-                    tracing::error!(%rollback_error, "failed to rollback settings from backup");
-                }
+            if had_existing
+                && let Err(rollback_error) = fs::rename(&backup, &self.path)
+            {
+                tracing::error!(%rollback_error, "failed to rollback settings from backup");
             }
             return Err(io_error(error));
         }

@@ -23,6 +23,7 @@ const LAVENDER: Color = Color::Rgb(190, 174, 255);
 const SAGE: Color = Color::Rgb(155, 207, 166);
 const PEACH: Color = Color::Rgb(255, 187, 153);
 const MUTED: Color = Color::Rgb(143, 143, 160);
+const BORDER_SUBTLE: Color = Color::Rgb(45, 45, 60);
 
 pub fn render(frame: &mut Frame<'_>, state: &mut AppState, hits: &mut HitMap) {
     render_inner(frame, state, hits, None);
@@ -73,7 +74,7 @@ fn render_inner(
                     ),
                     Span::styled(state.page.route.label(), Style::default().fg(PEACH)),
                 ]))
-                .block(Block::default().borders(Borders::BOTTOM)),
+                .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(BORDER_SUBTLE))),
                 header,
             );
             let content = body;
@@ -134,32 +135,40 @@ fn render_inner(
 
 fn render_topbar(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
     let routes = [
-        ("⌂ Home", Route::Home),
-        ("⌕ Search", Route::Search),
-        ("▣ Library", Route::Library),
-        ("⚙ Settings", Route::Settings),
+        ("1", "⌂ Home", Route::Home),
+        ("2", "⌕ Search", Route::Search),
+        ("3", "▣ Library", Route::Library),
+        ("4", "⚙ Settings", Route::Settings),
     ];
     let mut spans = vec![Span::styled(
         " ♪ Mellowdeck  ",
         Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
     )];
     let mut x = area.x.saturating_add(14);
-    for (label, route) in routes {
+    for (key, label, route) in routes {
         let active = route == state.primary_section;
-        let width = u16::try_from(label.chars().count() + 2).unwrap_or(u16::MAX);
-        spans.push(Span::styled(
-            format!(" {label} "),
-            if active {
-                Style::default().bg(LAVENDER).fg(INK).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(MUTED)
-            },
-        ));
+        let item_text = format!(" [{key}] {label} ");
+        let width = u16::try_from(item_text.chars().count()).unwrap_or(u16::MAX);
+        if active {
+            spans.push(Span::styled(
+                item_text,
+                Style::default().bg(LAVENDER).fg(INK).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(" [", Style::default().fg(MUTED)));
+            spans.push(Span::styled(key, Style::default().fg(PEACH)));
+            spans.push(Span::styled(format!("] {label} "), Style::default().fg(MUTED)));
+        }
         hits.add(Rect { x, y: area.y, width, height: area.height }, HitTarget::TopNav(route));
         x = x.saturating_add(width);
     }
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::BOTTOM)),
+        Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(BORDER_SUBTLE))
+                .style(Style::default().bg(INK)),
+        ),
         area,
     );
 }
@@ -181,7 +190,7 @@ fn focus_block(title: impl Into<Line<'static>>, focused: bool) -> Block<'static>
     Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(if focused { LAVENDER } else { MUTED }))
+        .border_style(Style::default().fg(if focused { LAVENDER } else { BORDER_SUBTLE }))
         .style(Style::default().bg(INK_SOFT))
 }
 
@@ -254,8 +263,9 @@ fn render_content(
         .constraints([Constraint::Length(header_height), Constraint::Min(2)])
         .split(area);
     render_content_header(frame, chunks[0], state, hits);
-    if let Some(artwork) = artwork {
-        let selected_art = state.page.selected_item().and_then(|item| item.artwork_url.as_deref());
+    let selected_art = state.page.selected_item().and_then(|item| item.artwork_url.as_deref());
+    let should_show_art = has_detail || selected_art.is_some();
+    if should_show_art && let Some(artwork) = artwork {
         let (placement, url, placeholder) = if has_detail {
             (
                 ArtworkPlacement::Header,
@@ -362,13 +372,17 @@ fn render_content(
 }
 
 fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
-    let padding = if matches!(
+    let selected_art = state.page.selected_item().and_then(|item| item.artwork_url.as_deref());
+    let has_detail = matches!(
         state.page.route,
         Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
-    ) {
+    );
+    let padding = if has_detail {
         16
-    } else {
+    } else if selected_art.is_some() {
         7
+    } else {
+        1
     };
     let mut lines = vec![Line::from(vec![
         Span::styled(
@@ -453,7 +467,6 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: true }).block(
             Block::default()
-                .borders(Borders::BOTTOM)
                 .padding(Padding::left(padding))
                 .style(Style::default().bg(INK)),
         ),
@@ -1117,7 +1130,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 ),
                 (
                     "Browse",
-                    "/ search · f filter Library · ←/→ filters/tabs · a add to queue · q Queue · d devices · i inspector",
+                    "1-4 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · q Queue · d devices · i inspector",
                 ),
                 (
                     "Mouse",

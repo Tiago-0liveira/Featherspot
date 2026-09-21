@@ -121,9 +121,9 @@ impl HitMap {
 
 pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     // Exit precedes text entry and overlays. Lower-case q remains the Queue shortcut.
-    let action = if matches!(key.code, KeyCode::Char('x') | KeyCode::Char('Q'))
+    let action = if matches!(key.code, KeyCode::Char('x' | 'Q'))
         || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::SHIFT))
-        || (matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q'))
+        || (matches!(key.code, KeyCode::Char('c' | 'q'))
             && key.modifiers.contains(KeyModifiers::CONTROL))
     {
         Action::Quit
@@ -133,6 +133,21 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Esc => Action::Cancel,
             KeyCode::Backspace => Action::Backspace,
             KeyCode::Enter => Action::SubmitText,
+            KeyCode::Down if state.overlay.is_none() => {
+                state.text_entry = false;
+                state.focus = FocusRegion::Content;
+                if state.page.route == Route::Search && state.search_query.is_empty() {
+                    state.populate_recent_searches();
+                }
+                return Vec::new();
+            }
+            KeyCode::Tab if state.overlay.is_none() => {
+                state.text_entry = false;
+                if state.page.route == Route::Search && state.search_query.is_empty() {
+                    state.populate_recent_searches();
+                }
+                Action::FocusNext(key.modifiers.contains(KeyModifiers::SHIFT))
+            }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Action::Insert(ch)
             }
@@ -140,6 +155,17 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         }
     } else {
         match key.code {
+            KeyCode::Up
+                if state.page.route == Route::Search
+                    && state.focus == FocusRegion::Content
+                    && state.page.cursor.selected == 0 =>
+            {
+                state.text_entry = true;
+                if state.search_query.is_empty() {
+                    state.populate_recent_searches();
+                }
+                return Vec::new();
+            }
             KeyCode::Tab => Action::FocusNext(key.modifiers.contains(KeyModifiers::SHIFT)),
             KeyCode::Up | KeyCode::Char('k') => Action::Move(-1),
             KeyCode::Down | KeyCode::Char('j') => Action::Move(1),
@@ -153,6 +179,10 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Right => Action::LocalRight,
             KeyCode::Enter => Action::Activate,
             KeyCode::Esc | KeyCode::Backspace => Action::Cancel,
+            KeyCode::Char('1') => Action::Navigate(Route::Home),
+            KeyCode::Char('2') => Action::Navigate(Route::Search),
+            KeyCode::Char('3') => Action::Navigate(Route::Library),
+            KeyCode::Char('4') => Action::Navigate(Route::Settings),
             KeyCode::Char('/') => Action::StartSearch,
             KeyCode::Char('f') if state.page.route == Route::Library => Action::StartFilter,
             KeyCode::Char(' ') => Action::TogglePlayback,
@@ -424,6 +454,12 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
                 state.overlay = None;
             } else if state.text_entry {
                 state.text_entry = false;
+                if state.page.route == Route::Search && state.search_query.is_empty() {
+                    state.populate_recent_searches();
+                }
+            } else if state.page.route == Route::Search && !state.search_query.is_empty() {
+                state.search_query.clear();
+                state.populate_recent_searches();
             } else {
                 state.back();
             }
@@ -495,7 +531,27 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
 }
 
 fn load_route(state: &mut AppState, route: Route) -> Vec<Effect> {
+    let is_search = route == Route::Search;
+    let is_search_empty = is_search && state.search_query.trim().is_empty();
+    let is_fresh = state
+        .page_cache
+        .get(&route.key())
+        .is_some_and(|(_, cached_at)| cached_at.elapsed() < Duration::from_secs(60));
+
     let generation = state.navigate(route.clone());
+    if is_search {
+        state.text_entry = true;
+    }
+
+    if is_search_empty {
+        state.populate_recent_searches();
+        return Vec::new();
+    }
+
+    if is_fresh && route != Route::Queue && route != Route::Devices {
+        return Vec::new();
+    }
+
     vec![Effect::LoadPage { route, generation, offset: 0, query: state.search_query.clone() }]
 }
 
@@ -611,6 +667,24 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
                     vec![Effect::Transfer(id)]
                 })
             }
+        }
+        EntityKind::Action if item.id.starts_with("recent-search:") => {
+            let query = item.title.clone();
+            state.search_query.clone_from(&query);
+            state.recent_searches.retain(|q| !q.eq_ignore_ascii_case(&query));
+            state.recent_searches.insert(0, query.clone());
+            state.generation = state.generation.saturating_add(1);
+            state.page.generation = state.generation;
+            state.page.state = crate::state::LoadState::Loading;
+            vec![
+                Effect::LoadPage {
+                    route: Route::Search,
+                    generation: state.generation,
+                    offset: 0,
+                    query,
+                },
+                Effect::SaveSettings,
+            ]
         }
         EntityKind::Action if item.id == "play-context" => item.uri.map_or_else(Vec::new, |uri| {
             vec![Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() }]
@@ -731,18 +805,32 @@ fn submit_text(state: &mut AppState) -> Vec<Effect> {
         state.text_entry = false;
         return Vec::new();
     }
-    state.text_entry = false;
     if state.page.route == Route::Search {
+        let trimmed = state.search_query.trim().to_string();
+        if trimmed.is_empty() {
+            state.populate_recent_searches();
+            return Vec::new();
+        }
+        state.text_entry = false;
+        state.recent_searches.retain(|q| !q.eq_ignore_ascii_case(&trimmed));
+        state.recent_searches.insert(0, trimmed);
+        if state.recent_searches.len() > 10 {
+            state.recent_searches.truncate(10);
+        }
         state.generation = state.generation.saturating_add(1);
         state.page.generation = state.generation;
         state.page.state = crate::state::LoadState::Loading;
-        vec![Effect::LoadPage {
-            route: Route::Search,
-            generation: state.generation,
-            offset: 0,
-            query: state.search_query.clone(),
-        }]
+        vec![
+            Effect::LoadPage {
+                route: Route::Search,
+                generation: state.generation,
+                offset: 0,
+                query: state.search_query.clone(),
+            },
+            Effect::SaveSettings,
+        ]
     } else {
+        state.text_entry = false;
         Vec::new()
     }
 }
@@ -815,9 +903,7 @@ mod tests {
                 Some(Overlay::Help { query: String::new(), editing: true }),
             ),
         ] {
-            let mut state = AppState::default();
-            state.text_entry = text_entry;
-            state.overlay = overlay;
+            let mut state = AppState { overlay, text_entry, ..AppState::default() };
             dispatch_key(&mut state, key_event);
             assert!(state.quit);
         }
@@ -1073,5 +1159,150 @@ mod tests {
         assert_eq!(state.playback.title, "Activated Track");
         assert_eq!(state.playback_history.len(), 1);
         assert_eq!(state.playback_history[0].title, "Initial");
+    }
+
+    #[test]
+    fn navigation_shortcuts_one_to_four_switch_tabs() {
+        let mut state = AppState::default();
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('2')));
+        assert_eq!(state.page.route, Route::Search);
+        assert!(state.text_entry);
+
+        // Exiting text entry allows numeric shortcut navigation
+        let _ = dispatch_key(&mut state, key(KeyCode::Down));
+        assert!(!state.text_entry);
+
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('3')));
+        assert_eq!(state.page.route, Route::Library);
+
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('4')));
+        assert_eq!(state.page.route, Route::Settings);
+
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('1')));
+        assert_eq!(state.page.route, Route::Home);
+    }
+
+    #[test]
+    fn navigating_to_search_auto_selects_input_and_enter_does_not_activate_track() {
+        let mut state = AppState {
+            page: page_with(
+                Route::Home,
+                vec![item(EntityKind::Track, "Initial Track", "spotify:track:initial", None)],
+            ),
+            ..AppState::default()
+        };
+
+        // Press '2' to go to Search
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('2')));
+        assert_eq!(state.page.route, Route::Search);
+        assert!(state.text_entry, "Search input should be auto-selected");
+
+        // Pressing Enter immediately on empty search query does NOT play music
+        let effects = dispatch_key(&mut state, key(KeyCode::Enter));
+        assert!(effects.is_empty(), "Enter on empty search should not emit play or load effects");
+        assert_eq!(state.playback.track_uri, None, "Track must not start playing");
+        assert!(state.text_entry, "Should remain in text entry if empty query submitted");
+
+        // Typing characters goes into search query, not global shortcuts
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('r')));
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('a')));
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('d')));
+        assert_eq!(state.search_query, "rad");
+
+        // Submitting with query emits LoadPage and SaveSettings
+        let effects = dispatch_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.text_entry, "Text entry should close on search submission");
+        assert!(effects.contains(&Effect::SaveSettings));
+        assert!(effects.iter().any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "rad")));
+    }
+
+    #[test]
+    fn search_input_down_and_up_arrow_navigation() {
+        let mut state = AppState {
+            recent_searches: vec!["arcade fire".into(), "radiohead".into()],
+            ..AppState::default()
+        };
+        let _ = dispatch_key(&mut state, key(KeyCode::Char('2')));
+        assert_eq!(state.page.route, Route::Search);
+        assert!(state.text_entry);
+
+        // Pressing Down leaves text entry and focuses content list at index 0
+        let _ = dispatch_key(&mut state, key(KeyCode::Down));
+        assert!(!state.text_entry);
+        assert_eq!(state.focus, FocusRegion::Content);
+        assert_eq!(state.page.cursor.selected, 0);
+
+        // Pressing Down again moves cursor to index 1
+        let _ = dispatch_key(&mut state, key(KeyCode::Down));
+        assert_eq!(state.page.cursor.selected, 1);
+
+        // Pressing Up moves cursor to index 0
+        let _ = dispatch_key(&mut state, key(KeyCode::Up));
+        assert_eq!(state.page.cursor.selected, 0);
+
+        // Pressing Up at index 0 re-enters search text entry
+        let _ = dispatch_key(&mut state, key(KeyCode::Up));
+        assert!(state.text_entry);
+    }
+
+    #[test]
+    fn search_submission_caches_recent_searches() {
+        let mut state = AppState::default();
+        state.page.route = Route::Search;
+        state.search_query = "radiohead".into();
+
+        let effects = submit_text(&mut state);
+        assert_eq!(state.recent_searches, vec!["radiohead"]);
+        assert!(effects.contains(&Effect::SaveSettings));
+        assert!(effects.iter().any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "radiohead")));
+
+        // Duplicate submission brings it to the top without duplicates
+        state.search_query = "daft punk".into();
+        let _ = submit_text(&mut state);
+        assert_eq!(state.recent_searches, vec!["daft punk", "radiohead"]);
+
+        state.search_query = "radiohead".into();
+        let _ = submit_text(&mut state);
+        assert_eq!(state.recent_searches, vec!["radiohead", "daft punk"]);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn recent_search_item_activation_executes_search() {
+        let mut state = AppState::default();
+        state.recent_searches = vec!["arcade fire".into()];
+        state.populate_recent_searches();
+        state.page.cursor.selected = 0;
+
+        let effects = reduce(&mut state, Action::Activate);
+        assert_eq!(state.search_query, "arcade fire");
+        assert!(effects.iter().any(|e| matches!(e, Effect::LoadPage { query, .. } if query == "arcade fire")));
+    }
+
+    #[test]
+    fn page_cache_fast_path_avoids_redundant_load_effects() {
+        let mut state = AppState::default();
+        let home_page = PageState {
+            route: Route::Home,
+            title: "Home".into(),
+            subtitle: "Cached".into(),
+            artwork_url: None,
+            sections: Vec::new(),
+            cursor: crate::state::ListCursor::default(),
+            state: LoadState::Ready,
+            filter: String::new(),
+            library_tab: LibraryTab::Albums,
+            search_filter: SearchFilter::All,
+            next_offset: None,
+            loading_more: false,
+            generation: 1,
+        };
+        state.page_cache.insert(Route::Home.key(), (home_page, Instant::now()));
+
+        // Navigating to Home with fresh cache returns empty effects (no network round-trip)
+        let effects = load_route(&mut state, Route::Home);
+        assert!(effects.is_empty());
+        assert_eq!(state.page.title, "Home");
+        assert_eq!(state.page.subtitle, "Cached");
     }
 }

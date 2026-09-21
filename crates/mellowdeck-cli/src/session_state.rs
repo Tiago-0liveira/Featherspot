@@ -10,10 +10,17 @@ pub struct CliSessionState {
     pub schema_version: u32,
     pub volume: u8,
     pub last_track: Option<PersistedTrack>,
+    #[serde(default)]
+    pub recent_searches: Vec<String>,
 }
 impl Default for CliSessionState {
     fn default() -> Self {
-        Self { schema_version: SCHEMA_VERSION, volume: 50, last_track: None }
+        Self {
+            schema_version: SCHEMA_VERSION,
+            volume: 50,
+            last_track: None,
+            recent_searches: Vec::new(),
+        }
     }
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -49,6 +56,10 @@ impl CliSessionStore {
         state.volume = state.volume.min(100);
         state
     }
+    /// Saves the CLI session state to disk atomically.
+    ///
+    /// # Errors
+    /// Returns an error if the directory cannot be created, serialization fails, or writing fails.
     pub fn save(&self, state: &CliSessionState) -> io::Result<()> {
         let Some(parent) = self.path.parent() else { return Ok(()) };
         fs::create_dir_all(parent)?;
@@ -57,6 +68,7 @@ impl CliSessionStore {
             schema_version: SCHEMA_VERSION,
             volume: state.volume.min(100),
             last_track: state.last_track.clone(),
+            recent_searches: state.recent_searches.clone(),
         })
         .map_err(io::Error::other)?;
         fs::write(&temporary, encoded)?;
@@ -90,7 +102,13 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("mellowdeck-session-clamp-{}", std::process::id()));
         let store = CliSessionStore::new(&root);
-        store.save(&CliSessionState { schema_version: 1, volume: 255, last_track: None }).unwrap();
+        store.save(&CliSessionState {
+            schema_version: 1,
+            volume: 255,
+            last_track: None,
+            recent_searches: Vec::new(),
+        })
+        .unwrap();
         assert_eq!(store.load().volume, 100);
         let _ = fs::remove_file(root.join("cli-session.json"));
         let _ = fs::remove_dir(root);
@@ -100,7 +118,12 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("mellowdeck-session-multi-{}", std::process::id()));
         let store = CliSessionStore::new(&root);
-        let first = CliSessionState { schema_version: 1, volume: 40, last_track: None };
+        let first = CliSessionState {
+            schema_version: 1,
+            volume: 40,
+            last_track: None,
+            recent_searches: Vec::new(),
+        };
         store.save(&first).unwrap();
         assert_eq!(store.load().volume, 40);
 
@@ -117,11 +140,17 @@ mod tests {
                 artwork_url: None,
                 duration_ms: 200_000,
             }),
+            recent_searches: vec!["daft punk".into()],
         };
         store.save(&second).unwrap();
         assert_eq!(store.load(), second);
 
-        let third = CliSessionState { schema_version: 1, volume: 60, last_track: None };
+        let third = CliSessionState {
+            schema_version: 1,
+            volume: 60,
+            last_track: None,
+            recent_searches: Vec::new(),
+        };
         store.save(&third).unwrap();
         assert_eq!(store.load(), third);
 

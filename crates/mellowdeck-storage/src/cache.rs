@@ -307,7 +307,7 @@ mod tests {
         let sample = 1_700_000_000_000_i64;
         assert_eq!(
             from_millis(sample).unwrap(),
-            UNIX_EPOCH + Duration::from_millis(sample as u64)
+            UNIX_EPOCH + Duration::from_millis(sample.cast_unsigned())
         );
     }
 

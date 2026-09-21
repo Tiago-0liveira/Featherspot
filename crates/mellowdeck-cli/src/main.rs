@@ -32,6 +32,7 @@ use mellowdeck_spotify::{SpotifyAuthenticator, TokenSet, validate_client_id};
 use mellowdeck_storage::JsonSettingsStore;
 use ratatui::{Terminal, backend::CrosstermBackend};
 
+#[allow(clippy::struct_field_names)]
 struct Session {
     settings: JsonSettingsStore,
     client_id: Option<String>,
@@ -118,6 +119,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run() -> Result<()> {
     let mut session = Session::load()?;
     println!("Mellowdeck CLI — sign in to Spotify in your browser.");
@@ -131,6 +133,7 @@ fn run() -> Result<()> {
         mouse: cli.mouse,
         wide_queue: cli.wide_queue,
         playback: PlaybackState { volume: cached_session.volume, ..PlaybackState::default() },
+        recent_searches: cached_session.recent_searches,
         ..AppState::default()
     };
     restore_cached_track(&mut state, cached_session.last_track);
@@ -186,10 +189,7 @@ fn run() -> Result<()> {
         handle_local_player_events(&local_player, &worker, &mut state, &mut fast_polls)?;
         let interval =
             if state.playback.playing { Duration::from_secs(5) } else { Duration::from_secs(15) };
-        if fast_polls.should_poll(Instant::now()) {
-            worker.send(Effect::RefreshPlayback)?;
-            playback_polled = Instant::now();
-        } else if playback_polled.elapsed() >= interval {
+        if fast_polls.should_poll(Instant::now()) || playback_polled.elapsed() >= interval {
             worker.send(Effect::RefreshPlayback)?;
             playback_polled = Instant::now();
         }
@@ -215,10 +215,10 @@ fn run() -> Result<()> {
                 )
             });
             if is_track_change {
-                let expected = if state.playback.track_uri != prev_track_uri {
-                    state.playback.track_uri.clone()
-                } else {
+                let expected = if state.playback.track_uri == prev_track_uri {
                     None
+                } else {
+                    state.playback.track_uri.clone()
                 };
                 fast_polls.schedule(prev_track_uri, expected);
             }
@@ -380,10 +380,10 @@ fn handle_response(
             Ok(()) => {
                 state.notice =
                     Some(Notice { kind: NoticeKind::Success, text: command_success(&effect) });
-                if matches!(effect, Effect::Volume(_)) {
-                    if let Err(error) = session.cli_session.save(&session_snapshot(state)) {
-                        tracing::warn!(%error, "failed to persist CLI session state");
-                    }
+                if matches!(effect, Effect::Volume(_))
+                    && let Err(error) = session.cli_session.save(&session_snapshot(state))
+                {
+                    tracing::warn!(%error, "failed to persist CLI session state");
                 }
                 if !matches!(
                     effect,
@@ -534,7 +534,7 @@ fn handle_local_player_events(
                         state.playback.title = title;
                     }
                     if let Some(artist) = artist {
-                        state.playback.artist = artist.clone();
+                        state.playback.artist.clone_from(&artist);
                         state.playback.artists = vec![(artist, None)];
                     }
                     if let Some(album) = album {
@@ -621,6 +621,7 @@ mod device_selection_tests {
         assert_eq!(state.selected_device_id.as_deref(), Some("local"));
     }
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn preserves_a_manually_selected_device() {
         let mut state = AppState::default();
         state.selected_device_id = Some("manual".into());
@@ -769,7 +770,12 @@ fn session_snapshot(state: &AppState) -> CliSessionState {
                 duration_ms: playback.duration_ms,
             }
         });
-    CliSessionState { schema_version: 1, volume: playback.volume.min(100), last_track }
+    CliSessionState {
+        schema_version: 1,
+        volume: playback.volume.min(100),
+        last_track,
+        recent_searches: state.recent_searches.clone(),
+    }
 }
 fn send_local_command(
     local_player: &BackgroundLocalPlayer,
@@ -886,10 +892,10 @@ struct FastPollTracker {
 impl FastPollTracker {
     fn schedule(&mut self, previous_uri: Option<String>, expected_uri: Option<String>) {
         let now = Instant::now();
-        if let Some(prev) = previous_uri {
-            if !self.stale_track_uris.contains(&prev) {
-                self.stale_track_uris.push(prev);
-            }
+        if let Some(prev) = previous_uri
+            && !self.stale_track_uris.contains(&prev)
+        {
+            self.stale_track_uris.push(prev);
         }
         self.expected_track_uri = expected_uri;
         self.deadlines = vec![
@@ -901,11 +907,11 @@ impl FastPollTracker {
     }
 
     fn should_poll(&mut self, now: Instant) -> bool {
-        if let Some(&first) = self.deadlines.first() {
-            if now >= first {
-                self.deadlines.remove(0);
-                return true;
-            }
+        if let Some(&first) = self.deadlines.first()
+            && now >= first
+        {
+            self.deadlines.remove(0);
+            return true;
         }
         false
     }
@@ -933,10 +939,10 @@ impl FastPollTracker {
             self.cancel();
             return true;
         }
-        if let Some(incoming) = incoming_uri {
-            if self.stale_track_uris.iter().any(|stale| stale == incoming) {
-                return false;
-            }
+        if let Some(incoming) = incoming_uri
+            && self.stale_track_uris.iter().any(|stale| stale == incoming)
+        {
+            return false;
         }
         if let Some(expected) = &self.expected_track_uri {
             if incoming_uri == Some(expected.as_str()) {

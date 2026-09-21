@@ -258,8 +258,26 @@ fn load_page(
             };
         }
         Route::Library => {
-            let albums = api.saved_albums_page(token, offset, PAGE_SIZE)?;
-            let playlists = api.playlists_page(token, offset, PAGE_SIZE)?;
+            let (albums, playlists) = std::thread::scope(|s| {
+                let albums_h = s.spawn(|| api.saved_albums_page(token, offset, PAGE_SIZE));
+                let playlists_h = s.spawn(|| api.playlists_page(token, offset, PAGE_SIZE));
+                (
+                    albums_h.join().unwrap_or_else(|_| {
+                        Err(mellowdeck_core::AppError::new(
+                            mellowdeck_core::ErrorKind::Unavailable,
+                            "album fetch worker panicked",
+                        ))
+                    }),
+                    playlists_h.join().unwrap_or_else(|_| {
+                        Err(mellowdeck_core::AppError::new(
+                            mellowdeck_core::ErrorKind::Unavailable,
+                            "playlist fetch worker panicked",
+                        ))
+                    }),
+                )
+            });
+            let albums = albums?;
+            let playlists = playlists?;
             page.title = "Library".into();
             page.subtitle = "Albums and playlists".into();
             page.next_offset = albums.next_offset.or(playlists.next_offset);

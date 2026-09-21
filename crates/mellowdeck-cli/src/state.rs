@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Instant,
+};
 
 use mellowdeck_core::CliArtworkPreference;
 
@@ -390,6 +393,8 @@ pub struct AppState {
     pub device_selected_by_user: bool,
     pub response_log: VecDeque<u64>,
     pub playback_history: Vec<PlaybackState>,
+    pub recent_searches: Vec<String>,
+    pub page_cache: HashMap<String, (PageState, Instant)>,
 }
 
 impl Default for AppState {
@@ -422,6 +427,8 @@ impl Default for AppState {
             device_selected_by_user: false,
             response_log: VecDeque::new(),
             playback_history: Vec::new(),
+            recent_searches: Vec::new(),
+            page_cache: HashMap::new(),
         }
     }
 }
@@ -449,10 +456,61 @@ impl AppState {
             self.history.push(self.page.clone());
         }
         self.generation = self.generation.saturating_add(1);
-        self.page = PageState::loading(route, self.generation);
+        if let Some((cached, _)) = self.page_cache.get(&route.key()) {
+            let mut page = cached.clone();
+            page.generation = self.generation;
+            self.page = page;
+        } else {
+            self.page = PageState::loading(route, self.generation);
+        }
         self.overlay = None;
         self.text_entry = false;
         self.generation
+    }
+    pub fn populate_recent_searches(&mut self) {
+        self.page.title = "Search".into();
+        self.page.subtitle = if self.recent_searches.is_empty() {
+            if self.text_entry {
+                "Type query and press Enter to search Spotify".into()
+            } else {
+                "Press / to type a search query".into()
+            }
+        } else if self.text_entry {
+            "Type query, press Enter to search, or ↓ for recent searches".into()
+        } else {
+            "Press / to type, or select a recent search".into()
+        };
+        if self.recent_searches.is_empty() {
+            self.page.sections = Vec::new();
+            self.page.state =
+                LoadState::Empty("Type a query and press Enter to search Spotify.".into());
+        } else {
+            let items = self
+                .recent_searches
+                .iter()
+                .map(|query| BrowseItem {
+                    id: format!("recent-search:{query}"),
+                    kind: EntityKind::Action,
+                    title: query.clone(),
+                    subtitle: "Recent search · press Enter to search again".into(),
+                    metadata: "Enter searches Spotify with this query.".into(),
+                    uri: None,
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: None,
+                    available: true,
+                    context: None,
+                    restricted: false,
+                })
+                .collect();
+            self.page.sections = vec![Section {
+                title: "Recent searches".into(),
+                items,
+            }];
+            self.page.state = LoadState::Ready;
+        }
     }
     pub fn back(&mut self) {
         if let Some(page) = self.history.pop() {
@@ -494,6 +552,9 @@ impl AppState {
     pub fn accept_page(&mut self, page: PageState) -> bool {
         if page.generation != self.generation || page.route.key() != self.page.route.key() {
             return false;
+        }
+        if page.state == LoadState::Ready || matches!(page.state, LoadState::Partial(_)) {
+            self.page_cache.insert(page.route.key(), (page.clone(), Instant::now()));
         }
         self.page = page;
         self.response_log.push_back(self.generation);
