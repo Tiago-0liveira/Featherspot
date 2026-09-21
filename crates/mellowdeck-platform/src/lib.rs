@@ -215,8 +215,11 @@ impl BackgroundLocalPlayer {
         let _ = self.commands.send(LocalPlayerCommand::Shutdown);
         *self.ready.lock().map_err(|_| poisoned())? = false;
         #[cfg(target_os = "windows")]
-        if let Some(child) = self.child.lock().map_err(|_| poisoned())?.as_mut() {
-            let _ = child.wait();
+        {
+            let child = self.child.lock().map_err(|_| poisoned())?.take();
+            if let Some(mut child) = child {
+                let _ = child.wait();
+            }
         }
         Ok(())
     }
