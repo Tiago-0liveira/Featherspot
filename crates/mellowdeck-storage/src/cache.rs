@@ -145,10 +145,28 @@ impl SqliteCache {
             transaction
                 .execute("DELETE FROM cache_entries WHERE cache_key = ?1", [key])
                 .map_err(storage_error)?;
-            size = size.saturating_sub(bytes);
+            if bytes <= 0 {
+                size = transaction
+                    .query_row("SELECT COALESCE(SUM(size_bytes), 0) FROM cache_entries", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(storage_error)?;
+                if size <= maximum {
+                    break;
+                }
+                // Also check if any remaining entries have size_bytes > 0; if not, break to prevent infinite loop
+                let positive_count: i64 = transaction
+                    .query_row("SELECT COUNT(*) FROM cache_entries WHERE size_bytes > 0", [], |row| row.get(0))
+                    .map_err(storage_error)?;
+                if positive_count == 0 {
+                    break;
+                }
+            } else {
+                size = size.saturating_sub(bytes);
+            }
         }
         transaction.commit().map_err(storage_error)?;
-        u64::try_from(size).map_err(|_| AppError::new(ErrorKind::Storage, "cache size is invalid"))
+        u64::try_from(size.max(0)).map_err(|_| AppError::new(ErrorKind::Storage, "cache size is invalid"))
     }
 }
 
@@ -291,5 +309,45 @@ mod tests {
             from_millis(sample).unwrap(),
             UNIX_EPOCH + Duration::from_millis(sample as u64)
         );
+    }
+
+    #[test]
+    fn trim_terminates_promptly_and_cleans_zero_byte_entries() {
+        let cache = SqliteCache::open_in_memory().unwrap();
+        block_on(cache.write("zero_1".into(), entry(0))).unwrap();
+        block_on(cache.write("zero_2".into(), entry(0))).unwrap();
+        block_on(cache.write("positive_1".into(), entry(10))).unwrap();
+        block_on(cache.write("positive_2".into(), entry(10))).unwrap();
+
+        {
+            let conn = cache.connection.lock().unwrap();
+            // Ensure zero-byte entries have earlier accessed timestamps so they are evicted first
+            conn.execute(
+                "UPDATE cache_entries SET accessed_at_ms = 1 WHERE cache_key = 'zero_1'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE cache_entries SET accessed_at_ms = 2 WHERE cache_key = 'zero_2'",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Eviction will first hit 'zero_1' (bytes <= 0) and 'zero_2' (bytes <= 0).
+        // It must cleanly delete them, recompute size, and terminate without looping infinitely.
+        let remaining_size = cache.trim_sync(10).unwrap();
+        assert!(remaining_size <= 10);
+
+        let conn = cache.connection.lock().unwrap();
+        let remaining_keys: Vec<String> = conn
+            .prepare("SELECT cache_key FROM cache_entries ORDER BY cache_key ASC")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!remaining_keys.contains(&"zero_1".to_string()));
+        assert!(!remaining_keys.contains(&"zero_2".to_string()));
     }
 }
