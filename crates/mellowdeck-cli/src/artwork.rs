@@ -164,6 +164,17 @@ impl ArtworkManager {
         self.cache.contains_key(url)
     }
 
+    #[must_use]
+    pub fn font_size(&self) -> (u16, u16) {
+        self.picker.font_size()
+    }
+
+    #[must_use]
+    pub fn square_cell_size(&self, max_width: u16, max_height: u16) -> (u16, u16) {
+        let (font_w, font_h) = self.picker.font_size();
+        square_cell_size_with_font(max_width, max_height, font_w, font_h)
+    }
+
     pub fn render(
         &mut self,
         frame: &mut Frame<'_>,
@@ -220,9 +231,19 @@ impl ArtworkManager {
         self.poll();
         if let Some(slot) = self.slots.get_mut(&placement) {
             if slot.has_image {
+                let render_area =
+                    if let Some(size) = slot.protocol.size_for(Resize::Fit(None), area) {
+                        let w = size.width.min(area.width);
+                        let h = size.height.min(area.height);
+                        let x = area.x.saturating_add((area.width.saturating_sub(w)) / 2);
+                        let y = area.y.saturating_add((area.height.saturating_sub(h)) / 2);
+                        Rect { x, y, width: w, height: h }
+                    } else {
+                        area
+                    };
                 frame.render_stateful_widget(
                     StatefulImage::new().resize(Resize::Fit(None)),
-                    area,
+                    render_area,
                     &mut slot.protocol,
                 );
             } else {
@@ -320,6 +341,26 @@ fn placeholder_widget(frame: &mut Frame<'_>, area: Rect, placeholder: &str) {
     );
 }
 
+#[must_use]
+pub fn square_cell_size_with_font(
+    max_width: u16,
+    max_height: u16,
+    font_w: u16,
+    font_h: u16,
+) -> (u16, u16) {
+    let font_w = u32::from(font_w.max(1));
+    let font_h = u32::from(font_h.max(1));
+    let avail_pixels_wide = u32::from(max_width) * font_w;
+    let avail_pixels_high = u32::from(max_height) * font_h;
+    let side_px = avail_pixels_wide.min(avail_pixels_high);
+    if side_px == 0 {
+        return (0, 0);
+    }
+    let cell_w = u16::try_from(side_px.div_ceil(font_w)).unwrap_or(max_width).min(max_width);
+    let cell_h = u16::try_from(side_px.div_ceil(font_h)).unwrap_or(max_height).min(max_height);
+    (cell_w, cell_h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +408,22 @@ mod tests {
         manager.touch("https://example.com/1.jpg");
         assert_eq!(manager.order.back().unwrap(), "https://example.com/1.jpg");
         assert_eq!(manager.order.front().unwrap(), "https://example.com/2.jpg");
+    }
+
+    #[test]
+    fn square_cell_size_preserves_square_aspect_ratio_and_bounds() {
+        // Standard 1:2 cell aspect ratio (8x16 font)
+        assert_eq!(square_cell_size_with_font(40, 9, 8, 16), (18, 9));
+        assert_eq!(square_cell_size_with_font(40, 10, 8, 16), (20, 10));
+
+        // When constrained by width (narrow terminal / pane)
+        assert_eq!(square_cell_size_with_font(14, 10, 8, 16), (14, 7));
+
+        // 10x20 font
+        assert_eq!(square_cell_size_with_font(36, 9, 10, 20), (18, 9));
+
+        // Zero dimensions
+        assert_eq!(square_cell_size_with_font(0, 9, 8, 16), (0, 0));
+        assert_eq!(square_cell_size_with_font(40, 0, 8, 16), (0, 0));
     }
 }
