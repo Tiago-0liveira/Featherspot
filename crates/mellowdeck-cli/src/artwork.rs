@@ -75,7 +75,7 @@ impl ArtworkManager {
             picker.set_protocol_type(ProtocolType::Halfblocks);
         }
         let (fetch_tx, fetch_rx) = mpsc::sync_channel::<String>(8);
-        let (download_tx, download_rx) = mpsc::channel();
+        let (download_tx, download_rx) = mpsc::sync_channel(32);
         if let Err(error) = thread::Builder::new()
             .name("mellowdeck-artwork".into())
             .spawn(move || {
@@ -232,7 +232,7 @@ impl ArtworkManager {
 
 fn image_slot(placement: ArtworkPlacement) -> ImageSlot {
     let (resize_tx, resize_rx) = mpsc::channel::<ResizeRequest>();
-    let (result_tx, result_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::sync_channel(16);
     if let Err(error) = thread::Builder::new()
         .name(format!("mellowdeck-artwork-{placement:?}"))
         .spawn(move || {

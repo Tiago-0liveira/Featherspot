@@ -63,7 +63,7 @@ pub struct AppPaths {
 #[derive(Debug)]
 pub struct BackgroundLocalPlayer {
     events: Mutex<mpsc::Receiver<LocalPlayerEvent>>,
-    commands: mpsc::Sender<LocalPlayerCommand>,
+    commands: mpsc::SyncSender<LocalPlayerCommand>,
     ready: Mutex<bool>,
     #[cfg(target_os = "windows")]
     child: Mutex<Option<Child>>,
@@ -74,8 +74,8 @@ pub struct BackgroundLocalPlayer {
 impl BackgroundLocalPlayer {
     /// Starts the local-player lifecycle and subscribes callers to typed availability events.
     pub fn start() -> Self {
-        let (event_sender, events) = mpsc::channel();
-        let (commands, command_receiver) = mpsc::channel();
+        let (event_sender, events) = mpsc::sync_channel(64);
+        let (commands, command_receiver) = mpsc::sync_channel(64);
         #[cfg(target_os = "windows")]
         {
             let executable = std::env::current_exe().ok().and_then(|path| {
