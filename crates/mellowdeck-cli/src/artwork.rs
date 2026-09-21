@@ -196,7 +196,8 @@ impl ArtworkManager {
             self.pending.remove(&downloaded.url);
             match downloaded.image {
                 Ok(image) => {
-                    if self.cache.len() >= CACHE_CAPACITY
+                    if !self.cache.contains_key(&downloaded.url)
+                        && self.cache.len() >= CACHE_CAPACITY
                         && let Some(oldest) = self.order.pop_front()
                     {
                         self.cache.remove(&oldest);
