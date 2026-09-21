@@ -67,6 +67,8 @@ pub struct BackgroundLocalPlayer {
     ready: Mutex<bool>,
     #[cfg(target_os = "windows")]
     child: Mutex<Option<Child>>,
+    #[cfg(target_os = "windows")]
+    threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl BackgroundLocalPlayer {
@@ -83,8 +85,9 @@ impl BackgroundLocalPlayer {
                 && let Ok(mut child) =
                     Command::new(executable).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()
             {
+                let mut threads = Vec::new();
                 if let Some(mut stdin) = child.stdin.take() {
-                    std::thread::spawn(move || {
+                    let handle = std::thread::spawn(move || {
                         for command in command_receiver {
                             let shutdown = matches!(command, LocalPlayerCommand::Shutdown);
                             let line = local_command_json(command);
@@ -96,10 +99,11 @@ impl BackgroundLocalPlayer {
                             }
                         }
                     });
+                    threads.push(handle);
                 }
                 if let Some(stdout) = child.stdout.take() {
                     let sender = event_sender.clone();
-                    std::thread::spawn(move || {
+                    let handle = std::thread::spawn(move || {
                         for line in
                             BufReader::new(stdout).lines().map_while(std::result::Result::ok)
                         {
@@ -137,12 +141,14 @@ impl BackgroundLocalPlayer {
                         }
                         let _ = sender.send(LocalPlayerEvent::Unavailable);
                     });
+                    threads.push(handle);
                 }
                 return Self {
                     events: Mutex::new(events),
                     commands,
                     ready: Mutex::new(false),
                     child: Mutex::new(Some(child)),
+                    threads: Mutex::new(threads),
                 };
             }
         }
@@ -153,6 +159,8 @@ impl BackgroundLocalPlayer {
             ready: Mutex::new(false),
             #[cfg(target_os = "windows")]
             child: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            threads: Mutex::new(Vec::new()),
         }
     }
 
@@ -220,8 +228,18 @@ impl BackgroundLocalPlayer {
             if let Some(mut child) = child {
                 let _ = child.wait();
             }
+            let handles = std::mem::take(&mut *self.threads.lock().map_err(|_| poisoned())?);
+            for handle in handles {
+                let _ = handle.join();
+            }
         }
         Ok(())
+    }
+}
+
+impl Drop for BackgroundLocalPlayer {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
@@ -378,6 +396,13 @@ mod tests {
         let player = BackgroundLocalPlayer::start();
         assert_eq!(player.try_next_event().unwrap(), Some(LocalPlayerEvent::Unavailable));
         assert!(!player.is_ready().unwrap());
+        player.shutdown().unwrap();
+    }
+
+    #[test]
+    fn background_host_shutdown_is_idempotent() {
+        let player = BackgroundLocalPlayer::start();
+        player.shutdown().unwrap();
         player.shutdown().unwrap();
     }
 }
