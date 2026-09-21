@@ -244,18 +244,27 @@ impl AppState {
         match action {
             Action::Navigate(route) if route != self.navigation.current => {
                 self.navigation.back.push(self.navigation.current.clone());
+                if self.navigation.back.len() > 50 {
+                    self.navigation.back.remove(0);
+                }
                 self.navigation.current = route;
                 self.navigation.forward.clear();
             }
             Action::NavigateBack => {
                 if let Some(route) = self.navigation.back.pop() {
                     self.navigation.forward.push(self.navigation.current.clone());
+                    if self.navigation.forward.len() > 50 {
+                        self.navigation.forward.remove(0);
+                    }
                     self.navigation.current = route;
                 }
             }
             Action::NavigateForward => {
                 if let Some(route) = self.navigation.forward.pop() {
                     self.navigation.back.push(self.navigation.current.clone());
+                    if self.navigation.back.len() > 50 {
+                        self.navigation.back.remove(0);
+                    }
                     self.navigation.current = route;
                 }
             }
@@ -293,6 +302,9 @@ impl AppState {
                 let id = self.notifications.next_id;
                 self.notifications.next_id = id.saturating_add(1);
                 self.notifications.items.push(Notification { id, message, kind });
+                if self.notifications.items.len() > 50 {
+                    self.notifications.items.remove(0);
+                }
             }
             Action::DismissNotification(id) => {
                 self.notifications.items.retain(|notification| notification.id != id);
@@ -361,5 +373,58 @@ mod tests {
         state.reduce(Action::LoggedOut);
         assert_eq!(state.settings.theme, ThemePreference::InkDark);
         assert_eq!(state.navigation.current, Route::Onboarding);
+    }
+
+    #[test]
+    fn navigation_back_stack_capped_at_fifty() {
+        let mut state = AppState::default();
+        for i in 1..=60 {
+            let route = Route::Playlist(PlaylistId::parse(format!("p{i}")).unwrap());
+            state.reduce(Action::Navigate(route));
+        }
+        assert_eq!(state.navigation.back.len(), 50);
+        let expected_oldest = Route::Playlist(PlaylistId::parse("p10").unwrap());
+        let expected_newest = Route::Playlist(PlaylistId::parse("p59").unwrap());
+        let expected_current = Route::Playlist(PlaylistId::parse("p60").unwrap());
+        assert_eq!(state.navigation.back.first(), Some(&expected_oldest));
+        assert_eq!(state.navigation.back.last(), Some(&expected_newest));
+        assert_eq!(state.navigation.current, expected_current);
+    }
+
+    #[test]
+    fn navigation_forward_stack_capped_at_fifty() {
+        let mut state = AppState::default();
+        state.navigation.back = (1..=60)
+            .map(|i| Route::Playlist(PlaylistId::parse(format!("p{i}")).unwrap()))
+            .collect();
+        state.navigation.current = Route::Playlist(PlaylistId::parse("p61").unwrap());
+
+        for _ in 0..60 {
+            state.reduce(Action::NavigateBack);
+        }
+        assert_eq!(state.navigation.forward.len(), 50);
+        let expected_current = Route::Playlist(PlaylistId::parse("p1").unwrap());
+        assert_eq!(state.navigation.current, expected_current);
+
+        for _ in 0..60 {
+            state.reduce(Action::NavigateForward);
+        }
+        assert_eq!(state.navigation.back.len(), 50);
+        assert!(state.navigation.forward.is_empty());
+    }
+
+    #[test]
+    fn notifications_capped_at_fifty() {
+        let mut state = AppState::default();
+        for i in 1..=60 {
+            state.reduce(Action::Notify {
+                message: format!("Notification {i}"),
+                kind: NotificationKind::Info,
+            });
+        }
+        assert_eq!(state.notifications.items.len(), 50);
+        assert_eq!(state.notifications.items.first().unwrap().message, "Notification 11");
+        assert_eq!(state.notifications.items.last().unwrap().message, "Notification 60");
+        assert_eq!(state.notifications.next_id, 60);
     }
 }
