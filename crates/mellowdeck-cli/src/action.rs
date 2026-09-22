@@ -57,6 +57,9 @@ pub enum Action {
     Repeat,
     Enqueue,
     Refresh,
+    PlayDetailContext,
+    PlayDetailContextWithShuffle,
+    OpenDetailSpotify,
     Quit,
 }
 
@@ -80,6 +83,9 @@ pub enum HitTarget {
     PlayerRepeat,
     SearchField,
     Help,
+    DetailPlay,
+    DetailShuffle,
+    DetailOpenSpotify,
 }
 
 #[derive(Clone, Debug)]
@@ -189,7 +195,16 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char('[') => Action::Previous,
             KeyCode::Char(']') => Action::Next,
             KeyCode::Char('-') => Action::Volume(-5),
-            KeyCode::Char('+' | '=') => Action::Volume(5),
+            KeyCode::Char('p' | 'P') if has_detail_actions(state) => Action::PlayDetailContext,
+            KeyCode::Char('S') if has_detail_actions(state) => {
+                Action::PlayDetailContextWithShuffle
+            }
+            KeyCode::Char('s')
+                if key.modifiers.contains(KeyModifiers::SHIFT) && has_detail_actions(state) =>
+            {
+                Action::PlayDetailContextWithShuffle
+            }
+            KeyCode::Char('o' | 'O') if has_detail_actions(state) => Action::OpenDetailSpotify,
             KeyCode::Char('s') => Action::Shuffle,
             KeyCode::Char('r') => Action::Repeat,
             KeyCode::Char('q') => Action::Navigate(Route::Queue),
@@ -287,6 +302,9 @@ pub fn dispatch_mouse(
                 Some(HitTarget::PlayerRepeat) => Some(Action::Repeat),
                 Some(HitTarget::SearchField) => Some(Action::StartSearch),
                 Some(HitTarget::Help) => Some(Action::ToggleHelp),
+                Some(HitTarget::DetailPlay) => Some(Action::PlayDetailContext),
+                Some(HitTarget::DetailShuffle) => Some(Action::PlayDetailContextWithShuffle),
+                Some(HitTarget::DetailOpenSpotify) => Some(Action::OpenDetailSpotify),
                 _ => None,
             };
             if let Some(action) = direct {
@@ -523,11 +541,51 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
             offset: 0,
             query: state.search_query.clone(),
         }],
+        Action::PlayDetailContext => detail_context_uri(state).map_or_else(Vec::new, |uri| {
+            vec![Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() }]
+        }),
+        Action::PlayDetailContextWithShuffle => {
+            detail_context_uri(state).map_or_else(Vec::new, |uri| {
+                state.playback.shuffle = true;
+                vec![
+                    Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() },
+                    Effect::Shuffle(true),
+                ]
+            })
+        }
+        Action::OpenDetailSpotify => detail_external_url(state).map_or_else(Vec::new, |url| {
+            vec![Effect::OpenExternal(url)]
+        }),
         Action::Quit => {
             state.quit = true;
             Vec::new()
         }
     }
+}
+
+fn has_detail_actions(state: &AppState) -> bool {
+    matches!(
+        state.page.route,
+        Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
+    ) && state.overlay.is_none()
+        && !state.text_entry
+}
+
+fn detail_context_uri(state: &AppState) -> Option<String> {
+    state.page.uri.clone().or_else(|| match &state.page.route {
+        Route::Album { uri, .. } | Route::Playlist { uri, .. } | Route::Artist { uri, .. } => {
+            Some(uri.clone())
+        }
+        _ => None,
+    })
+}
+
+fn detail_external_url(state: &AppState) -> Option<String> {
+    state.page.external_url.clone().or_else(|| {
+        detail_context_uri(state).and_then(|uri| {
+            uri.parse::<mellowdeck_core::ids::SpotifyUri>().ok().map(|parsed| parsed.web_url())
+        })
+    })
 }
 
 fn load_route(state: &mut AppState, route: Route) -> Vec<Effect> {
@@ -1287,6 +1345,8 @@ mod tests {
             title: "Home".into(),
             subtitle: "Cached".into(),
             artwork_url: None,
+            uri: None,
+            external_url: None,
             sections: Vec::new(),
             cursor: crate::state::ListCursor::default(),
             state: LoadState::Ready,
@@ -1304,5 +1364,138 @@ mod tests {
         assert!(effects.is_empty());
         assert_eq!(state.page.title, "Home");
         assert_eq!(state.page.subtitle, "Cached");
+    }
+
+    #[test]
+    fn detail_context_actions_dispatch_via_mouse_and_keyboard() {
+        let mut state = AppState::default();
+        state.page = PageState::loading(
+            Route::Album {
+                uri: "spotify:album:1".into(),
+                title: "OK Computer".into(),
+            },
+            1,
+        );
+        state.page.uri = Some("spotify:album:1".into());
+        state.page.external_url = Some("https://open.spotify.com/album/1".into());
+        state.selected_device_id = Some("dev-1".into());
+
+        // Keyboard shortcuts
+        let play_fx = dispatch_key(&mut state, key(KeyCode::Char('p')));
+        assert_eq!(
+            play_fx,
+            vec![Effect::PlayTrack {
+                uri: "spotify:album:1".into(),
+                device_id: Some("dev-1".into()),
+            }]
+        );
+
+        let shuffle_fx = dispatch_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
+        );
+        assert!(state.playback.shuffle);
+        assert_eq!(
+            shuffle_fx,
+            vec![
+                Effect::PlayTrack {
+                    uri: "spotify:album:1".into(),
+                    device_id: Some("dev-1".into()),
+                },
+                Effect::Shuffle(true),
+            ]
+        );
+
+        // Shift+s (with lowercase 's' + SHIFT modifier)
+        let shuffle_shift_s = dispatch_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SHIFT),
+        );
+        assert_eq!(
+            shuffle_shift_s,
+            vec![
+                Effect::PlayTrack {
+                    uri: "spotify:album:1".into(),
+                    device_id: Some("dev-1".into()),
+                },
+                Effect::Shuffle(true),
+            ]
+        );
+
+        // Plain 's' without SHIFT in detail route must toggle global shuffle, NOT restart context
+        state.playback.shuffle = false;
+        let toggle_shuffle = dispatch_key(&mut state, key(KeyCode::Char('s')));
+        assert_eq!(toggle_shuffle, vec![Effect::Shuffle(true)]);
+
+        // Artist detail route without explicit external_url derives web URL when 'o' pressed
+        let mut artist_state = AppState::default();
+        artist_state.page = PageState::loading(
+            Route::Artist {
+                uri: "spotify:artist:4Z8W4fKeB5YxbusRsdQVPb".into(),
+                title: "Radiohead".into(),
+            },
+            1,
+        );
+        assert_eq!(
+            artist_state.page.uri.as_deref(),
+            Some("spotify:artist:4Z8W4fKeB5YxbusRsdQVPb")
+        );
+        assert_eq!(
+            artist_state.page.external_url.as_deref(),
+            Some("https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb")
+        );
+        let artist_spotify_fx = dispatch_key(&mut artist_state, key(KeyCode::Char('o')));
+        assert_eq!(
+            artist_spotify_fx,
+            vec![Effect::OpenExternal(
+                "https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb".into()
+            )]
+        );
+
+        let spotify_fx = dispatch_key(&mut state, key(KeyCode::Char('o')));
+        assert_eq!(
+            spotify_fx,
+            vec![Effect::OpenExternal("https://open.spotify.com/album/1".into())]
+        );
+
+        // Mouse click targets
+        let mut hits = HitMap::default();
+        hits.add(Rect { x: 10, y: 5, width: 10, height: 1 }, HitTarget::DetailPlay);
+        hits.add(Rect { x: 22, y: 5, width: 10, height: 1 }, HitTarget::DetailShuffle);
+        hits.add(Rect { x: 34, y: 5, width: 10, height: 1 }, HitTarget::DetailOpenSpotify);
+
+        let click = |col| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        let mouse_play = dispatch_mouse(&mut state, &mut hits, click(12), Instant::now());
+        assert_eq!(
+            mouse_play,
+            vec![Effect::PlayTrack {
+                uri: "spotify:album:1".into(),
+                device_id: Some("dev-1".into()),
+            }]
+        );
+
+        let mouse_shuffle = dispatch_mouse(&mut state, &mut hits, click(24), Instant::now());
+        assert_eq!(
+            mouse_shuffle,
+            vec![
+                Effect::PlayTrack {
+                    uri: "spotify:album:1".into(),
+                    device_id: Some("dev-1".into()),
+                },
+                Effect::Shuffle(true),
+            ]
+        );
+
+        let mouse_spotify = dispatch_mouse(&mut state, &mut hits, click(36), Instant::now());
+        assert_eq!(
+            mouse_spotify,
+            vec![Effect::OpenExternal("https://open.spotify.com/album/1".into())]
+        );
     }
 }

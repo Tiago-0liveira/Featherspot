@@ -234,6 +234,8 @@ pub struct PageState {
     pub title: String,
     pub subtitle: String,
     pub artwork_url: Option<String>,
+    pub uri: Option<String>,
+    pub external_url: Option<String>,
     pub sections: Vec<Section>,
     pub cursor: ListCursor,
     pub state: LoadState,
@@ -248,11 +250,22 @@ pub struct PageState {
 impl PageState {
     pub fn loading(route: Route, generation: u64) -> Self {
         let title = route.label().to_owned();
+        let uri = match &route {
+            Route::Album { uri, .. }
+            | Route::Playlist { uri, .. }
+            | Route::Artist { uri, .. } => Some(uri.clone()),
+            _ => None,
+        };
+        let external_url = uri.as_deref().and_then(|u| {
+            u.parse::<mellowdeck_core::ids::SpotifyUri>().ok().map(|parsed| parsed.web_url())
+        });
         Self {
             route,
             title,
             subtitle: String::new(),
             artwork_url: None,
+            uri,
+            external_url,
             sections: Vec::new(),
             cursor: ListCursor::default(),
             state: LoadState::Loading,
