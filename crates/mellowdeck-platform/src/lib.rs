@@ -160,6 +160,12 @@ impl BackgroundLocalPlayer {
                 };
             }
         }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::thread::spawn(move || {
+                for _ in command_receiver {}
+            });
+        }
         let _ = event_sender.send(LocalPlayerEvent::Unavailable);
         Self {
             events: Mutex::new(events),
