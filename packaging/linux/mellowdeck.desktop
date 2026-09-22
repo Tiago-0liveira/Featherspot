@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mellowdeck
+Comment=Artwork-led Spotify desktop client
+Exec=mellowdeck
+Icon=mellowdeck
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true

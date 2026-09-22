@@ -7,6 +7,7 @@ members = [
     "crates/mellowdeck-player-host",
     "crates/mellowdeck-spotify",
     "crates/mellowdeck-storage",
+    "xtask",
 ]
 default-members = ["crates/mellowdeck-cli"]
 resolver = "2"
