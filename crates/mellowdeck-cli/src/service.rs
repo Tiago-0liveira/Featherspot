@@ -196,14 +196,14 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
             };
             ServiceResponse::Command { effect, result: api.repeat(token, mode) }
         }
-        Effect::PlayTrack { uri, device_id } => ServiceResponse::Command {
-            effect,
-            result: api.play_uri_on_device(token, &uri, device_id.as_deref()),
-        },
-        Effect::PlayContext { uri, position, device_id } => ServiceResponse::Command {
-            effect,
-            result: api.play_context_at(token, &uri, position, device_id.as_deref()),
-        },
+        Effect::PlayTrack { uri, device_id } => {
+            let result = play_track_with_retry(api, token, &uri, device_id.as_deref());
+            ServiceResponse::Command { effect, result }
+        }
+        Effect::PlayContext { uri, position, device_id } => {
+            let result = play_context_with_retry(api, token, &uri, position, device_id.as_deref());
+            ServiceResponse::Command { effect, result }
+        }
         Effect::Enqueue(uri) => {
             ServiceResponse::Command { effect, result: api.enqueue(token, &uri) }
         }
@@ -536,6 +536,79 @@ pub const fn repeat_mode(value: u8) -> &'static str {
     }
 }
 
+fn play_track_with_retry(
+    api: &SpotifyWebApi,
+    token: &str,
+    uri: &str,
+    device_id: Option<&str>,
+) -> Result<()> {
+    let initial = api.play_uri_on_device(token, uri, device_id);
+    if let Err(ref error) = initial
+        && error.kind == ErrorKind::Unavailable
+    {
+        let target_device = match device_id {
+            Some(id) => Some(id.to_owned()),
+            None => resolve_fallback_device(api, token),
+        };
+        if let Some(ref target) = target_device {
+            let _ = api.transfer(token, target);
+            thread::sleep(Duration::from_millis(250));
+            if api.play_uri_on_device(token, uri, Some(target)).is_ok() {
+                return Ok(());
+            }
+        }
+        thread::sleep(Duration::from_millis(150));
+        if let Ok(playback) = api.playback(token)
+            && playback.playing
+        {
+            return Ok(());
+        }
+    }
+    initial
+}
+
+fn play_context_with_retry(
+    api: &SpotifyWebApi,
+    token: &str,
+    uri: &str,
+    position: usize,
+    device_id: Option<&str>,
+) -> Result<()> {
+    let initial = api.play_context_at(token, uri, position, device_id);
+    if let Err(ref error) = initial
+        && error.kind == ErrorKind::Unavailable
+    {
+        let target_device = match device_id {
+            Some(id) => Some(id.to_owned()),
+            None => resolve_fallback_device(api, token),
+        };
+        if let Some(ref target) = target_device {
+            let _ = api.transfer(token, target);
+            thread::sleep(Duration::from_millis(250));
+            if api.play_context_at(token, uri, position, Some(target)).is_ok() {
+                return Ok(());
+            }
+        }
+        thread::sleep(Duration::from_millis(150));
+        if let Ok(playback) = api.playback(token)
+            && playback.playing
+        {
+            return Ok(());
+        }
+    }
+    initial
+}
+
+fn resolve_fallback_device(api: &SpotifyWebApi, token: &str) -> Option<String> {
+    let devices = api.devices(token).ok()?;
+    devices
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case("mellowdeck") && !d.restricted)
+        .or_else(|| devices.iter().find(|d| d.active && !d.restricted))
+        .or_else(|| devices.iter().find(|d| !d.restricted))
+        .map(|d| d.id.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,10 +643,7 @@ mod tests {
     #[test]
     fn apply_detail_stores_context_metadata_and_omits_action_section() {
         let mut page = PageState::loading(
-            Route::Album {
-                uri: "spotify:album:1".into(),
-                title: "OK Computer".into(),
-            },
+            Route::Album { uri: "spotify:album:1".into(), title: "OK Computer".into() },
             1,
         );
         let detail = SpotifyDetailPage {

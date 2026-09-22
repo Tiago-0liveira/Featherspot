@@ -1,6 +1,7 @@
 Mellowdeck portable build
 
-Run mellowdeck.exe from this directory. Spotify playback on this device requires the Microsoft
+Run mellowdeck-cli.exe from this directory (it launches mellowdeck-player-host.exe
+for local Web Playback SDK support). Spotify playback on this device requires the Microsoft
 Edge WebView2 Evergreen Runtime and Spotify Premium. If diagnostics report WebView2 missing,
 install the Evergreen Runtime from:
 https://developer.microsoft.com/microsoft-edge/webview2/

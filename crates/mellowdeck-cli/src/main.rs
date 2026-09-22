@@ -341,6 +341,18 @@ fn handle_response(
             if !fast_polls.should_accept_playback(playback.track_uri.as_deref()) {
                 return Ok(());
             }
+            if playback.playing {
+                if state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker) {
+                    state.overlay = None;
+                }
+                state.clear_error_notice();
+            }
+            if let Some(ref device_name) = playback.device_name {
+                state.playback.device_name = Some(device_name.clone());
+            }
+            if let Some(ref device_id) = playback.device_id {
+                state.playback.device_id = Some(device_id.clone());
+            }
             if playback.track_uri.is_some() {
                 if state.playback.track_uri.is_some()
                     && state.playback.track_uri != playback.track_uri
@@ -356,8 +368,10 @@ fn handle_response(
                     album: playback.album,
                     album_uri: playback.album_uri,
                     artwork_url: playback.artwork_url,
-                    device_id: playback.device_id,
-                    device_name: playback.device_name,
+                    device_id: playback.device_id.or_else(|| state.playback.device_id.clone()),
+                    device_name: playback
+                        .device_name
+                        .or_else(|| state.playback.device_name.clone()),
                     playing: playback.playing,
                     progress_ms: playback.progress_ms.min(playback.duration_ms),
                     duration_ms: playback.duration_ms,
@@ -375,6 +389,8 @@ fn handle_response(
                 if let Err(error) = session.cli_session.save(&session_snapshot(state)) {
                     tracing::warn!(%error, "failed to persist CLI session state");
                 }
+            } else if playback.playing {
+                state.playback.playing = true;
             }
             select_automatic_device(state);
         }
@@ -391,6 +407,11 @@ fn handle_response(
             Ok(()) => {
                 state.notice =
                     Some(Notice { kind: NoticeKind::Success, text: command_success(&effect) });
+                if matches!(effect, Effect::PlayTrack { .. } | Effect::PlayContext { .. })
+                    && state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker)
+                {
+                    state.overlay = None;
+                }
                 if matches!(effect, Effect::Volume(_))
                     && let Err(error) = session.cli_session.save(&session_snapshot(state))
                 {
@@ -464,7 +485,7 @@ fn handle_response(
                         LoadState::Stale(error.to_string())
                     };
                 }
-                if error.kind == ErrorKind::Unavailable {
+                if error.kind == ErrorKind::Unavailable && state.target_device_id().is_none() {
                     state.overlay = Some(mellowdeck_cli::Overlay::DevicePicker);
                 }
                 worker.send(Effect::RefreshPlayback)?;
@@ -489,6 +510,16 @@ fn handle_local_player_events(
                 let device_id = device_id.to_string();
                 state.local_device_id = Some(device_id.clone());
                 select_automatic_device(state);
+                if state.playback.device_name.is_none() {
+                    state.playback.device_name = Some("Mellowdeck".into());
+                }
+                if state.playback.device_id.is_none() {
+                    state.playback.device_id = Some(device_id);
+                }
+                if state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker) {
+                    state.overlay = None;
+                }
+                state.clear_error_notice();
                 send_local_command(
                     local_player,
                     LocalPlayerCommand::Volume {
@@ -526,6 +557,15 @@ fn handle_local_player_events(
                 artwork_url,
             } => {
                 if local_player_selected(state) {
+                    if playing {
+                        if state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker) {
+                            state.overlay = None;
+                        }
+                        state.clear_error_notice();
+                        if state.playback.device_name.is_none() {
+                            state.playback.device_name = Some("Mellowdeck".into());
+                        }
+                    }
                     if let Some(ref uri) = track_uri {
                         let uri_str = uri.to_string();
                         if state.playback.track_uri.as_deref() != Some(&uri_str) {
@@ -583,6 +623,8 @@ fn select_automatic_device(state: &mut AppState) {
         state.selected_device_id = Some(device_id);
     } else if let Some(device_id) = state.local_device_id.clone() {
         state.selected_device_id = Some(device_id);
+    } else if let Some(device_id) = state.playback.device_id.clone() {
+        state.selected_device_id = Some(device_id);
     }
 }
 
@@ -637,6 +679,12 @@ mod device_selection_tests {
         playback(&mut state, "remote", true);
         local_ready(&mut state, "local");
         assert_eq!(state.selected_device_id.as_deref(), Some("manual"));
+    }
+    #[test]
+    fn selects_paused_remote_when_no_local_device() {
+        let mut state = AppState::default();
+        playback(&mut state, "remote", false);
+        assert_eq!(state.selected_device_id.as_deref(), Some("remote"));
     }
 }
 

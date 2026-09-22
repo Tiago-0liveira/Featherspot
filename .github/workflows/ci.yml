@@ -21,8 +21,8 @@ jobs:
         with:
           toolchain: 1.98.1
           components: rustfmt, clippy
-      - run: cargo test --workspace --exclude mellowdeck
-      - run: cargo clippy --workspace --exclude mellowdeck --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   windows:
     name: Windows x64

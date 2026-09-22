@@ -26,7 +26,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/portable | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/mellowdeck.exe dist/portable/
+          Copy-Item target/x86_64-pc-windows-msvc/release/mellowdeck-cli.exe dist/portable/
+          Copy-Item target/x86_64-pc-windows-msvc/release/mellowdeck-player-host.exe dist/portable/
           Copy-Item packaging/windows/portable/README.txt dist/portable/
           Compress-Archive -Path dist/portable/* -DestinationPath dist/Mellowdeck-${{ github.ref_name }}-windows-x64-portable-unsigned.zip
           cargo cyclonedx --format json --override-filename Mellowdeck-${{ github.ref_name }}.cdx

@@ -271,9 +271,9 @@ impl PageState {
     pub fn loading(route: Route, generation: u64) -> Self {
         let title = route.label().to_owned();
         let uri = match &route {
-            Route::Album { uri, .. }
-            | Route::Playlist { uri, .. }
-            | Route::Artist { uri, .. } => Some(uri.clone()),
+            Route::Album { uri, .. } | Route::Playlist { uri, .. } | Route::Artist { uri, .. } => {
+                Some(uri.clone())
+            }
             _ => None,
         };
         let external_url = uri.as_deref().and_then(|u| {
@@ -516,6 +516,37 @@ impl AppState {
     pub fn queue_visible(&self) -> bool {
         self.layout_has_inline_queue() && self.page.route != Route::Queue
     }
+    /// Returns the most specific target device identifier available for playback commands.
+    pub fn target_device_id(&self) -> Option<String> {
+        self.selected_device_id
+            .clone()
+            .or_else(|| self.local_device_id.clone())
+            .or_else(|| self.playback.device_id.clone())
+    }
+    /// Returns a human-friendly device label for the status deck.
+    pub fn display_device_name(&self) -> &str {
+        if let Some(ref name) = self.playback.device_name
+            && !name.is_empty()
+        {
+            return name.as_str();
+        }
+        if self.local_device_id.is_some()
+            && (self.selected_device_id.is_none()
+                || self.selected_device_id == self.local_device_id)
+        {
+            return "Mellowdeck";
+        }
+        if self.selected_device_id.is_some() {
+            return "Spotify Connect";
+        }
+        "choose with d"
+    }
+    /// Clears any transient error notice.
+    pub fn clear_error_notice(&mut self) {
+        if self.notice.as_ref().is_some_and(|n| n.kind == NoticeKind::Error) {
+            self.notice = None;
+        }
+    }
     pub fn navigate(&mut self, route: Route) -> u64 {
         if self.page.route != route {
             if matches!(
@@ -536,6 +567,7 @@ impl AppState {
         }
         self.overlay = None;
         self.text_entry = false;
+        self.clear_error_notice();
         self.generation
     }
     pub fn populate_recent_searches(&mut self) {
@@ -932,5 +964,26 @@ mod tests {
 
         state.layout = LayoutMode::Standard;
         assert!(state.visible_focuses().contains(&FocusRegion::Sidebar));
+    }
+
+    #[test]
+    fn display_device_name_and_target_device_id_fallbacks() {
+        let mut state = AppState::default();
+        assert_eq!(state.display_device_name(), "choose with d");
+        assert_eq!(state.target_device_id(), None);
+
+        // Local player ready
+        state.local_device_id = Some("local-1".into());
+        assert_eq!(state.display_device_name(), "Mellowdeck");
+        assert_eq!(state.target_device_id().as_deref(), Some("local-1"));
+
+        // Remote playback device known
+        state.playback.device_id = Some("remote-1".into());
+        state.playback.device_name = Some("Living Room".into());
+        assert_eq!(state.display_device_name(), "Living Room");
+
+        // Selected device wins target_device_id
+        state.selected_device_id = Some("selected-1".into());
+        assert_eq!(state.target_device_id().as_deref(), Some("selected-1"));
     }
 }

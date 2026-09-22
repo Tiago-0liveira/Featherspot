@@ -813,7 +813,7 @@ fn render_player_status(
         return;
     }
     let help = if status_row.width < 45 { "?" } else { "? Help" };
-    let device_name = state.playback.device_name.as_deref().unwrap_or("choose with d");
+    let device_name = state.display_device_name();
     let prefix = "Device: ";
     let separator = "  ·  ";
     let device_max = status_row.width.saturating_sub(
@@ -1855,15 +1855,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn detail_page_header_renders_buttons_and_eliminates_duplicated_info() {
         let backend = TestBackend::new(120, 35);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = AppState::default();
         state.page = PageState::loading(
-            Route::Album {
-                uri: "spotify:album:1".into(),
-                title: "OK Computer".into(),
-            },
+            Route::Album { uri: "spotify:album:1".into(), title: "OK Computer".into() },
             1,
         );
         state.page.title = "OK Computer".into();
@@ -1942,12 +1940,11 @@ mod tests {
         let backend = TestBackend::new(80, 35);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = AppState::default();
-        let long_title = "A Very Long Album Title That Exceeds Normal Screen Width And Would Wrap In Paragraph".to_string();
+        let long_title =
+            "A Very Long Album Title That Exceeds Normal Screen Width And Would Wrap In Paragraph"
+                .to_string();
         state.page = PageState::loading(
-            Route::Album {
-                uri: "spotify:album:long".into(),
-                title: long_title.clone(),
-            },
+            Route::Album { uri: "spotify:album:long".into(), title: long_title.clone() },
             1,
         );
         state.page.title = long_title;
@@ -1972,15 +1969,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn artist_detail_header_renders_songs_and_artist_play_labels() {
         let backend = TestBackend::new(120, 35);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = AppState::default();
         state.page = PageState::loading(
-            Route::Artist {
-                uri: "spotify:artist:radiohead".into(),
-                title: "Radiohead".into(),
-            },
+            Route::Artist { uri: "spotify:artist:radiohead".into(), title: "Radiohead".into() },
             1,
         );
         state.page.title = "Radiohead".into();
