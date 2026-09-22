@@ -114,6 +114,13 @@ impl Session {
 }
 
 fn main() {
+    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!(
+            "mellowdeck-cli {}",
+            option_env!("MELLOWDECK_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+        );
+        return;
+    }
     if let Err(error) = run() {
         eprintln!("mellowdeck-cli: {error}");
     }
