@@ -90,16 +90,21 @@ jobs:
                 Write-Host 'A newer main commit already has a release; skipping this older rerun.'
                 exit 0
               }
-            }
-            $lastVersion = if ($latest) { [version]$latest.Substring(1) } else { [version]'0.1.0' }
-            if ($lastVersion -lt [version]'0.1.0') { $lastVersion = [version]'0.1.0' }
-            if ($lastVersion.Build -lt 65535) {
-              $nextVersion = [version]::new($lastVersion.Major, $lastVersion.Minor, $lastVersion.Build + 1)
-            } elseif ($lastVersion.Minor -lt 255) {
-              $nextVersion = [version]::new($lastVersion.Major, $lastVersion.Minor + 1, 0)
+
+              $lastVersion = [version]$latest.Substring(1)
+              if ($lastVersion -lt [version]'0.1.0') {
+                $nextVersion = [version]'0.1.0'
+              } elseif ($lastVersion.Build -lt 65535) {
+                $nextVersion = [version]::new($lastVersion.Major, $lastVersion.Minor, $lastVersion.Build + 1)
+              } elseif ($lastVersion.Minor -lt 255) {
+                $nextVersion = [version]::new($lastVersion.Major, $lastVersion.Minor + 1, 0)
+              } else {
+                $nextVersion = [version]::new($lastVersion.Major + 1, 0, 0)
+              }
             } else {
-              $nextVersion = [version]::new($lastVersion.Major + 1, 0, 0)
+              $nextVersion = [version]'0.1.0'
             }
+
             if ($nextVersion.Major -gt 255) { throw 'MSI version range is exhausted.' }
             $tag = "v$nextVersion"
           }
@@ -112,6 +117,10 @@ jobs:
         with:
           toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust
+        if: steps.version.outputs.skip != 'true'
+        uses: Swatinem/rust-cache@v2
 
       - name: Build both executables
         if: steps.version.outputs.skip != 'true'
