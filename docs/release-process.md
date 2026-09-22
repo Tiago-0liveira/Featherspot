@@ -1,11 +1,24 @@
 # Release process
 
-1. Complete the Windows feasibility matrix in `docs/feasibility-checklist.md`.
-2. Run formatting, Clippy, tests, dependency audit, and license checks.
-3. Review both locales, both themes, keyboard navigation, Narrator, and high contrast.
-4. Produce x64 MSI and portable ZIP artifacts on the tagged Windows workflow.
-5. Publish SHA-256 checksums, SBOM, dependency/license report, and release notes.
+A successful CI run for a push to `main` triggers the Windows release workflow. Pull requests,
+other branches, and failed CI runs do not publish a release. Release jobs wait for earlier main CI
+runs, then build the exact commit that passed CI.
 
-Artifacts are marked unsigned until a signing certificate is configured. Live Spotify tests are
-manual and use an allowlisted Premium test account.
+The workflow chooses a version above the highest `vMAJOR.MINOR.PATCH` tag, starting above `0.1.0`.
+It builds `mellowdeck-cli.exe` and `mellowdeck-player-host.exe` together and publishes a per-user
+MSI, portable ZIP, `install.ps1`, `install.cmd`, SHA-256 checksums, and a CycloneDX SBOM. Published
+releases are public and marked unsigned. A retry of an already published commit does not produce
+another release.
 
+The MSI owns both executables and the user PATH entry. Its upgrade identity and install path stay
+stable across versions, while settings, cache, and logs remain in `%LOCALAPPDATA%\Mellowdeck`.
+Running either install script again installs the latest MSI. A future in-app updater can use the
+same release asset after the CLI exits.
+
+The earlier draft MSI used a machine-wide install location. Users who installed that draft should
+uninstall it once before using the per-user installer, so Windows does not retain two installations.
+
+Before promoting a release as stable, complete the Windows feasibility matrix in
+`docs/feasibility-checklist.md`, review keyboard and accessibility behavior, and run live Spotify
+checks with an allowlisted Premium test account. Code signing and a dependency/license report
+remain separate release-readiness work.

@@ -39,3 +39,12 @@ jobs:
       - run: cargo test --workspace
       - run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
+  release:
+    name: Publish Windows release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [portable, windows]
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/release.yml
+

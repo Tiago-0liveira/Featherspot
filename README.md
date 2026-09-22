@@ -44,9 +44,30 @@ crates/
 ### Prerequisites
 
 - Windows (Windows 10/11 x64) with Microsoft Edge WebView2 Evergreen Runtime
-- Rust `1.98.1` (the pinned toolchain in `rust-toolchain.toml`)
 - A Spotify Premium account for playback
 - A Spotify Developer application in Development Mode
+
+### Install on Windows
+
+In PowerShell, run this one command to download and silently install the latest release:
+
+```powershell
+irm https://github.com/Tiago-0liveira/Featherspot/releases/latest/download/install.ps1 | iex
+```
+
+Or [download `install.cmd`](https://github.com/Tiago-0liveira/Featherspot/releases/latest/download/install.cmd)
+and run it. You can also [download the MSI directly](https://github.com/Tiago-0liveira/Featherspot/releases/latest).
+The installer is per-user, requires no administrator rights or Rust toolchain, and puts
+`mellowdeck-cli` on your PATH. Open a new terminal after installation and run:
+
+```powershell
+mellowdeck-cli
+```
+
+Both the CLI and its player host are installed together. Running the install command again installs
+the latest version over an older one; close Mellowdeck first. `mellowdeck-cli --version` shows the
+installed release version. The portable ZIP on the Releases page includes both executables but
+does not add them to PATH.
 
 ### Configure Spotify
 
@@ -62,6 +83,8 @@ cryptographically random state value, accepts one matching callback, and then sh
 For full setup notes, see [`docs/spotify-setup.md`](docs/spotify-setup.md).
 
 ### Build and run
+
+To build from source, install Rust `1.98.1` (the pinned toolchain in `rust-toolchain.toml`).
 
 ```powershell
 cargo build -p mellowdeck-player-host

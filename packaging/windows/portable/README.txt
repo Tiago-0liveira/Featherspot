@@ -6,6 +6,6 @@ Edge WebView2 Evergreen Runtime and Spotify Premium. If diagnostics report WebVi
 install the Evergreen Runtime from:
 https://developer.microsoft.com/microsoft-edge/webview2/
 
-This build stores its settings, cache, and logs in the adjacent data directory. No offline audio is
+This build stores its settings, cache, and logs in %LOCALAPPDATA%\Mellowdeck. No offline audio is
 stored. This artifact is unsigned unless the release notes explicitly say otherwise.
 

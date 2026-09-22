@@ -1,17 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Mellowdeck" Manufacturer="Mellowdeck contributors" Version="0.1.0"
-           UpgradeCode="71E46D0A-B4E9-4C2A-8D88-7A183A9F4D38" Scope="perMachine">
+  <Package Name="Mellowdeck" Manufacturer="Mellowdeck contributors" Version="$(var.ProductVersion)"
+           UpgradeCode="71E46D0A-B4E9-4C2A-8D88-7A183A9F4D38" Scope="perUser">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Mellowdeck is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Mellowdeck">
-        <Component Id="MellowdeckExecutable" Guid="0BC93F70-D7C2-45C4-8134-7F997E1B324F">
-          <File Id="MellowdeckCliExe" Source="$(var.SourceDir)\mellowdeck-cli.exe" KeyPath="yes" />
-        </Component>
-        <Component Id="MellowdeckPlayerHost" Guid="5A91B896-A563-45FE-9B0D-77F682CC2EE0">
-          <File Id="MellowdeckPlayerHostExe" Source="$(var.SourceDir)\mellowdeck-player-host.exe" KeyPath="yes" />
-        </Component>
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="MellowdeckProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Mellowdeck">
+          <Component Id="MellowdeckExecutable" Guid="4DB53B10-8766-4FE0-963B-E3953830616B">
+            <File Id="MellowdeckCliExe" Source="$(var.SourceDir)\mellowdeck-cli.exe" KeyPath="yes" />
+            <Environment Id="MellowdeckPath" Name="PATH" Action="set" Part="last"
+                         System="no" Value="[INSTALLFOLDER]" />
+          </Component>
+          <Component Id="MellowdeckPlayerHost" Guid="41066FE6-7CCF-429A-AF86-3966B792B230">
+            <File Id="MellowdeckPlayerHostExe" Source="$(var.SourceDir)\mellowdeck-player-host.exe" KeyPath="yes" />
+          </Component>
+        </Directory>
       </Directory>
     </StandardDirectory>
     <Feature Id="MainFeature" Title="Mellowdeck" Level="1">
