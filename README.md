@@ -1,14 +1,14 @@
-# Mellowdeck
+# Mellowdeck CLI
 
-> A calm, artwork-led Spotify desktop client for Windows, built in Rust.
+> A calm, artwork-led terminal Spotify client for Windows, built in Rust.
 
-Mellowdeck is an experimental, non-commercial, open-source Spotify client. It combines a
-small, testable domain core with a native desktop shell and keeps Spotify, storage, playback,
-and platform concerns behind explicit interfaces.
+Mellowdeck is an experimental, non-commercial, open-source Spotify terminal client. It combines
+a clean, testable domain core with a rich Ratatui terminal interface, keeping Spotify Web API,
+storage, and platform concerns behind explicit boundaries.
 
 > [!IMPORTANT]
 > Mellowdeck is not affiliated with or endorsed by Spotify. A Spotify Premium account is
-> required for playback. Spotify Development Mode currently restricts new applications to
+> required for playback control. Spotify Development Mode currently restricts new applications to
 > allowlisted users; public sign-in requires Spotify approval.
 
 ## What works today
@@ -17,44 +17,33 @@ and platform concerns behind explicit interfaces.
 - Authorization Code with PKCE using a loopback callback on `127.0.0.1:43821`
 - Secure refresh-token storage in Windows Credential Manager
 - Session restoration and signed-in profile loading
-- Personal Home collections, catalog search, and Spotify artwork
+- Personal Home collections, catalog search, and Spotify artwork (half-block or terminal graphics)
 - Spotify Connect device selection and queue display
-- Play, pause, previous, next, seek, and volume controls
-- A half-revealed vinyl interaction that rotates during playback and can be dragged to seek
-- Compact and expanded visual themes, localization, keyboard navigation, and redacted logs
+- Play, pause, previous, next, seek, shuffle, repeat, and volume controls
+- Keyboard navigation, mouse clicks/scrolling, contextual help, and responsive terminal layouts
 
-The authenticated shell and Web API integration are functional. A hardened Wry/WebView2
-playback bridge is present, but embedded Web Playback SDK support remains gated on the protected-
-media feasibility work. Until that work is complete, audio comes from the selected Spotify
-Connect device.
+Playback is controlled across your devices via Spotify Connect.
 
 ## Project shape
 
-The repository is a Cargo workspace. `mellowdeck-core` owns domain models, validated IDs,
-state, actions, errors, and asynchronous ports. The remaining crates are adapters that depend
-inward on that core:
+The repository is a Cargo workspace centered around `mellowdeck-cli`:
 
 ```text
-mellowdeck
-├── mellowdeck-ui           GPUI shell, views, themes, localization, and artwork
-├── mellowdeck-spotify      OAuth, Web API calls, policy, and callbacks
-├── mellowdeck-playback     Playback state and local-player bridge boundary
-├── mellowdeck-storage      SQLite cache, settings, and secure-token integration
-├── mellowdeck-platform     Windows/platform capabilities
-├── mellowdeck-player-host  WebView2 player-host process
-├── mellowdeck-cli          Terminal interface for core capabilities
-└── mellowdeck-test-support Shared fixtures and test helpers
+crates/
+├── mellowdeck-cli          Terminal interface (Ratatui TUI, views, artwork, key/mouse dispatch)
+├── mellowdeck-core         Domain models, validated IDs, state, and settings
+├── mellowdeck-spotify      OAuth PKCE, Web API calls, policy, and callback server
+├── mellowdeck-storage      JSON settings, session persistence, and SQLite cache
+├── mellowdeck-platform     Windows/platform capabilities, WebView2 player bridge, and credentials
+├── mellowdeck-player-host  WebView2 player-host process for local Web Playback SDK
+└── mellowdeck-playback     Player-host IPC protocol and target coordination
 ```
-
-State transitions pass through named `Action` values and `AppState::reduce`. Core does not
-depend on GPUI, Wry, HTTP, SQLite, or operating-system APIs. See
-[the architecture notes](docs/architecture.md) for the dependency rules and playback boundary.
 
 ## Getting started
 
 ### Prerequisites
 
-- Windows with the WebView2 runtime available
+- Windows (Windows 10/11 x64) with Microsoft Edge WebView2 Evergreen Runtime
 - Rust `1.98.1` (the pinned toolchain in `rust-toolchain.toml`)
 - A Spotify Premium account for playback
 - A Spotify Developer application in Development Mode
@@ -70,32 +59,33 @@ Mellowdeck uses Authorization Code with PKCE/S256. No client secret is needed, a
 secret should be placed in this repository or in a desktop binary. The callback verifies a
 cryptographically random state value, accepts one matching callback, and then shuts down.
 
-For the full setup notes, see [`docs/spotify-setup.md`](docs/spotify-setup.md).
+For full setup notes, see [`docs/spotify-setup.md`](docs/spotify-setup.md).
 
 ### Build and run
 
 ```powershell
-cargo run -p mellowdeck
-```
-
-The terminal client is also available while the workspace is under development:
-
-```powershell
 cargo build -p mellowdeck-player-host
-cargo run -p mellowdeck-cli
+cargo run
 ```
 
 The CLI launches `mellowdeck-player-host.exe` from the same Cargo output directory. Build the
 host once before running the CLI, and rebuild it after changing the player-host crate.
 
-The terminal client adapts from 80 columns upward. Wide terminals show Navigation, Browse, and
-Queue together; medium terminals open Queue as a page; compact terminals use the `☰ Menu` overlay.
-Use `Tab`/`Shift+Tab` to move focus, arrows or `j`/`k` to move within a pane, `Enter` to open or
-play, `/` to search, `a` to append a track to the queue, and `?` for searchable contextual help.
-Seeking uses `Shift+Left`/`Shift+Right`. Mouse clicks, double-clicks, right-click actions, wheel
-scrolling, and player controls are enabled by default. CLI artwork (`Auto`, `Blocks`, or `Off`),
-mouse input, and the wide-screen queue can be changed on the Settings page and are stored with the
-existing local settings.
+The terminal client adapts from 80 columns upward:
+- Wide terminals show Navigation, Browse, and Queue together.
+- Medium terminals open Queue as a page.
+- Compact terminals use the `☰ Menu` overlay.
+
+**Controls**:
+- `Tab` / `Shift+Tab`: Move focus between panes
+- Arrows or `j` / `k`: Move within a pane
+- `Enter`: Open or play selection
+- `/`: Search
+- `a`: Append track to queue
+- `Shift+Left` / `Shift+Right`: Seek backward/forward
+- `?`: Searchable contextual help
+- Mouse clicks, double-clicks, right-click actions, and wheel scrolling are supported.
+- Artwork mode (`Auto`, `Blocks`, or `Off`), mouse input, and layout breakpoints can be configured on the Settings page.
 
 ## Development checks
 
@@ -107,20 +97,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Useful project documentation:
-
-- [Architecture](docs/architecture.md)
-- [UX specification](docs/ux-specification.md)
-- [UI and vinyl plan](docs/ui-and-vinyl-plan.md)
-- [Feasibility checklist](docs/feasibility-checklist.md)
-- [Release process](docs/release-process.md)
-- [Contributing](CONTRIBUTING.md)
-
 ## Privacy and local data
 
-Refresh tokens are stored through Windows Credential Manager. Local settings and cache data are
-kept on the machine, and daily redacted logs are written to
-`%LOCALAPPDATA%\Mellowdeck\logs`.
+Refresh tokens are stored through Windows Credential Manager. Local settings and session data are
+kept in `%LOCALAPPDATA%\Mellowdeck`.
 
 Mellowdeck does not log access tokens, refresh tokens, Client IDs, or search text. See
 [`PRIVACY.md`](PRIVACY.md) for the project privacy statement.

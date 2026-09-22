@@ -197,9 +197,7 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char(']') => Action::Next,
             KeyCode::Char('-') => Action::Volume(-5),
             KeyCode::Char('p' | 'P') if has_detail_actions(state) => Action::PlayDetailContext,
-            KeyCode::Char('S') if has_detail_actions(state) => {
-                Action::PlayDetailContextWithShuffle
-            }
+            KeyCode::Char('S') if has_detail_actions(state) => Action::PlayDetailContextWithShuffle,
             KeyCode::Char('s')
                 if key.modifiers.contains(KeyModifiers::SHIFT) && has_detail_actions(state) =>
             {
@@ -470,6 +468,7 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::Cancel => {
             if state.overlay.is_some() {
                 state.overlay = None;
+                state.clear_error_notice();
             } else if state.text_entry {
                 state.text_entry = false;
                 if state.page.route == Route::Search && state.search_query.is_empty() {
@@ -485,7 +484,7 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
         }
         Action::TogglePlayback if state.playback.cached_track && !state.playback.playing => {
             state.playback.track_uri.clone().map_or_else(Vec::new, |uri| {
-                vec![Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() }]
+                vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
             })
         }
         Action::TogglePlayback => vec![Effect::TogglePlayback],
@@ -542,20 +541,20 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
             query: state.search_query.clone(),
         }],
         Action::PlayDetailContext => detail_context_uri(state).map_or_else(Vec::new, |uri| {
-            vec![Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() }]
+            vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
         }),
         Action::PlayDetailContextWithShuffle => {
             detail_context_uri(state).map_or_else(Vec::new, |uri| {
                 state.playback.shuffle = true;
                 vec![
-                    Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() },
+                    Effect::PlayTrack { uri, device_id: state.target_device_id() },
                     Effect::Shuffle(true),
                 ]
             })
         }
-        Action::OpenDetailSpotify => detail_external_url(state).map_or_else(Vec::new, |url| {
-            vec![Effect::OpenExternal(url)]
-        }),
+        Action::OpenDetailSpotify => {
+            detail_external_url(state).map_or_else(Vec::new, |url| vec![Effect::OpenExternal(url)])
+        }
         Action::Quit => {
             state.quit = true;
             Vec::new()
@@ -564,10 +563,8 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
 }
 
 fn has_detail_actions(state: &AppState) -> bool {
-    matches!(
-        state.page.route,
-        Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. }
-    ) && state.overlay.is_none()
+    matches!(state.page.route, Route::Album { .. } | Route::Playlist { .. } | Route::Artist { .. })
+        && state.overlay.is_none()
         && !state.text_entry
 }
 
@@ -697,11 +694,11 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
                 vec![Effect::PlayContext {
                     uri: context.uri,
                     position: context.position,
-                    device_id: state.selected_device_id.clone(),
+                    device_id: state.target_device_id(),
                 }]
             } else {
                 item.uri.map_or_else(Vec::new, |uri| {
-                    vec![Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() }]
+                    vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
                 })
             }
         }
@@ -722,6 +719,12 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
                 item.uri.map_or_else(Vec::new, |id| {
                     state.selected_device_id = Some(id.clone());
                     state.device_selected_by_user = true;
+                    let clean_title =
+                        item.title.replace(" (active)", "").replace(" (restricted)", "");
+                    state.playback.device_name = Some(clean_title);
+                    state.playback.device_id = Some(id.clone());
+                    state.overlay = None;
+                    state.clear_error_notice();
                     vec![Effect::Transfer(id)]
                 })
             }
@@ -745,7 +748,7 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
             ]
         }
         EntityKind::Action if item.id == "play-context" => item.uri.map_or_else(Vec::new, |uri| {
-            vec![Effect::PlayTrack { uri, device_id: state.selected_device_id.clone() }]
+            vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
         }),
         EntityKind::Action if item.id == "open-external" => {
             item.external_url.map_or_else(Vec::new, |url| vec![Effect::OpenExternal(url)])
@@ -1435,13 +1438,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, clippy::field_reassign_with_default)]
     fn detail_context_actions_dispatch_via_mouse_and_keyboard() {
         let mut state = AppState::default();
         state.page = PageState::loading(
-            Route::Album {
-                uri: "spotify:album:1".into(),
-                title: "OK Computer".into(),
-            },
+            Route::Album { uri: "spotify:album:1".into(), title: "OK Computer".into() },
             1,
         );
         state.page.uri = Some("spotify:album:1".into());
@@ -1458,10 +1459,8 @@ mod tests {
             }]
         );
 
-        let shuffle_fx = dispatch_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
-        );
+        let shuffle_fx =
+            dispatch_key(&mut state, KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
         assert!(state.playback.shuffle);
         assert_eq!(
             shuffle_fx,
@@ -1475,10 +1474,8 @@ mod tests {
         );
 
         // Shift+s (with lowercase 's' + SHIFT modifier)
-        let shuffle_shift_s = dispatch_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SHIFT),
-        );
+        let shuffle_shift_s =
+            dispatch_key(&mut state, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SHIFT));
         assert_eq!(
             shuffle_shift_s,
             vec![
@@ -1504,10 +1501,7 @@ mod tests {
             },
             1,
         );
-        assert_eq!(
-            artist_state.page.uri.as_deref(),
-            Some("spotify:artist:4Z8W4fKeB5YxbusRsdQVPb")
-        );
+        assert_eq!(artist_state.page.uri.as_deref(), Some("spotify:artist:4Z8W4fKeB5YxbusRsdQVPb"));
         assert_eq!(
             artist_state.page.external_url.as_deref(),
             Some("https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb")

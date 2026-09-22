@@ -7,7 +7,7 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Mellowdeck">
         <Component Id="MellowdeckExecutable" Guid="0BC93F70-D7C2-45C4-8134-7F997E1B324F">
-          <File Id="MellowdeckExe" Source="$(var.SourceDir)\mellowdeck.exe" KeyPath="yes" />
+          <File Id="MellowdeckCliExe" Source="$(var.SourceDir)\mellowdeck-cli.exe" KeyPath="yes" />
         </Component>
         <Component Id="MellowdeckPlayerHost" Guid="5A91B896-A563-45FE-9B0D-77F682CC2EE0">
           <File Id="MellowdeckPlayerHostExe" Source="$(var.SourceDir)\mellowdeck-player-host.exe" KeyPath="yes" />

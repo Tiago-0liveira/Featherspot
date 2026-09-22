@@ -1,16 +1,14 @@
 [workspace]
 members = [
-    "crates/mellowdeck",
-    "crates/mellowdeck-core",
-    "crates/mellowdeck-spotify",
-    "crates/mellowdeck-playback",
-    "crates/mellowdeck-storage",
-    "crates/mellowdeck-platform",
-    "crates/mellowdeck-ui",
-    "crates/mellowdeck-test-support",
     "crates/mellowdeck-cli",
+    "crates/mellowdeck-core",
+    "crates/mellowdeck-platform",
+    "crates/mellowdeck-playback",
     "crates/mellowdeck-player-host",
+    "crates/mellowdeck-spotify",
+    "crates/mellowdeck-storage",
 ]
+default-members = ["crates/mellowdeck-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -23,9 +21,7 @@ repository = "https://github.com/mellowdeck/lspotify"
 [workspace.dependencies]
 base64 = "=0.22.1"
 crossterm = "=0.28.1"
-futures-channel = "=0.3.34"
 gpui = "=0.2.2"
-gpui_http_client = "=0.2.2"
 keyring = { version = "=4.2.0", default-features = false, features = ["v1", "windows-native-keyring-store"] }
 open = "=5.4.4"
 rand = "=0.9.2"
@@ -40,8 +36,6 @@ sha2 = "=0.10.9"
 tempfile = "=3.22.0"
 thiserror = "=2.0.16"
 tracing = "=0.1.41"
-tracing-appender = "=0.2.3"
-tracing-subscriber = { version = "=0.3.20", features = ["fmt"] }
 url = "=2.5.7"
 wry = "=0.57.0"
 
