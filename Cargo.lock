@@ -3951,6 +3951,7 @@ dependencies = [
  "mellowdeck-playback",
  "open",
  "serde_json",
+ "tracing",
  "wry",
 ]
 

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 mellowdeck-core = { path = "../mellowdeck-core" }
 open.workspace = true
+tracing.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring.workspace = true

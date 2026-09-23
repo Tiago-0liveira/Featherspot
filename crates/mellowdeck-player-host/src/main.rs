@@ -51,10 +51,54 @@ mod windows {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HostAction {
+        Continue,
+        Shutdown,
+    }
+
+    pub trait PlayerBridge {
+        fn send(&self, command: &LocalPlayerCommand) -> mellowdeck_core::Result<()>;
+    }
+
+    impl PlayerBridge for PlaybackWebView {
+        fn send(&self, command: &LocalPlayerCommand) -> mellowdeck_core::Result<()> {
+            self.send(command)
+        }
+    }
+
+    pub fn handle_host_commands<P: PlayerBridge>(
+        commands: &mpsc::Receiver<LocalPlayerCommand>,
+        player: Option<&P>,
+    ) -> HostAction {
+        loop {
+            match commands.try_recv() {
+                Ok(command) => {
+                    let is_shutdown = matches!(command, LocalPlayerCommand::Shutdown);
+                    if let Some(player) = player {
+                        let _ = player.send(&command);
+                    }
+                    if is_shutdown {
+                        return HostAction::Shutdown;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => return HostAction::Continue,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return HostAction::Shutdown;
+                }
+            }
+        }
+    }
+
+    pub fn cleanup_player<P: PlayerBridge>(player: Option<&P>) {
+        if let Some(player) = player {
+            let _ = player.send(&LocalPlayerCommand::Shutdown);
+        }
+    }
+
     struct Host {
         player: Option<PlaybackWebView>,
         commands: mpsc::Receiver<LocalPlayerCommand>,
-        stdin_thread: Option<thread::JoinHandle<()>>,
     }
     impl Render for Host {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
@@ -64,35 +108,32 @@ mod windows {
 
     impl Drop for Host {
         fn drop(&mut self) {
-            drop(std::mem::replace(&mut self.commands, mpsc::sync_channel(1).1));
-            if let Some(handle) = self.stdin_thread.take() {
-                let _ = handle.join();
-            }
+            cleanup_player(self.player.as_ref());
         }
     }
 
     #[allow(clippy::too_many_lines)]
     pub fn run() {
         let (sender, receiver) = mpsc::sync_channel(64);
-        let stdin_thread = thread::Builder::new()
+        let _stdin_thread = thread::Builder::new()
             .name("mellowdeck-player-host-stdin".into())
             .spawn(move || {
                 for line in io::stdin().lock().lines().map_while(Result::ok) {
                     if let Ok(command) = serde_json::from_str::<Command>(&line)
                         && sender.send(command.into()).is_err()
                     {
-                        break;
+                        return;
                     }
                 }
+                // When stdin loop finishes (EOF), sender is dropped,
+                // disconnecting the command channel and notifying the GPUI host.
             })
             .ok();
         let mut receiver = Some(receiver);
-        let mut stdin_thread = stdin_thread;
         Application::new().run(move |cx: &mut App| {
             let bounds =
                 Bounds::new(gpui::point(px(-10_000.0), px(-10_000.0)), size(px(1.0), px(1.0)));
             let mut receiver = receiver.take();
-            let mut stdin_thread = stdin_thread.take();
             let window_result = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -118,41 +159,33 @@ mod windows {
                             return cx.new(|_| Host {
                                 player: None,
                                 commands: receiver.take().expect("commands receiver"),
-                                stdin_thread: stdin_thread.take(),
                             });
                         }
                     };
                     let host_receiver = receiver.take().expect("commands receiver");
-                    let host_stdin_thread = stdin_thread.take();
                     cx.new(|cx: &mut Context<Host>| {
                         cx.spawn(async move |host, cx| {
                             loop {
                                 cx.background_executor().timer(Duration::from_millis(25)).await;
-                                if !host
-                                    .update(cx, |host, cx| {
-                                        for command in host.commands.try_iter() {
-                                            let shutdown =
-                                                matches!(command, LocalPlayerCommand::Shutdown);
-                                            if let Some(player) = &host.player {
-                                                let _ = player.send(&command);
-                                            }
-                                            if shutdown {
-                                                cx.quit();
-                                                return false;
-                                            }
-                                        }
-                                        true
+                                let action = host
+                                    .update(cx, |host, _cx| {
+                                        handle_host_commands(&host.commands, host.player.as_ref())
                                     })
-                                    .unwrap_or(false)
-                                {
+                                    .unwrap_or(HostAction::Shutdown);
+
+                                if action == HostAction::Shutdown {
                                     break;
                                 }
                             }
+                            // Ensure player cleanup runs on every shutdown path
+                            let _ = host.update(cx, |host, _cx| {
+                                cleanup_player(host.player.as_ref());
+                            });
+                            // Allow a brief period for WebView2 to execute player.disconnect()
+                            // and notify Spotify servers before quitting the process
+                            cx.background_executor().timer(Duration::from_millis(150)).await;
                             let _ = host.update(cx, |host, cx| {
-                                drop(std::mem::replace(&mut host.commands, mpsc::sync_channel(1).1));
-                                if let Some(handle) = host.stdin_thread.take() {
-                                    let _ = handle.join();
-                                }
+                                host.player = None;
                                 cx.quit();
                             });
                         })
@@ -160,7 +193,6 @@ mod windows {
                         Host {
                             player: Some(player),
                             commands: host_receiver,
-                            stdin_thread: host_stdin_thread,
                         }
                     })
                 },
@@ -191,6 +223,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
     #[test]
     fn unavailable_event_serialization() {
         let reason = "WebView2 runtime missing".to_string();
@@ -203,5 +236,169 @@ mod tests {
         assert_eq!(parsed["id"], 0);
         assert_eq!(parsed["payload"]["type"], "unavailable");
         assert_eq!(parsed["payload"]["reason"], "WebView2 runtime missing");
+    }
+
+    #[cfg(target_os = "windows")]
+    mod regression_tests {
+        use super::super::windows::{
+            HostAction, PlayerBridge, cleanup_player, handle_host_commands,
+        };
+        use mellowdeck_core::LocalPlayerCommand;
+        use std::{
+            io::Write as _,
+            sync::{Arc, Mutex, mpsc::sync_channel},
+            time::Duration,
+        };
+
+        struct MockPlayer {
+            commands: Arc<Mutex<Vec<LocalPlayerCommand>>>,
+        }
+
+        impl PlayerBridge for MockPlayer {
+            fn send(&self, command: &LocalPlayerCommand) -> mellowdeck_core::Result<()> {
+                self.commands.lock().unwrap().push(command.clone());
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn host_exits_when_its_command_channel_disconnects() {
+            let (sender, receiver) = sync_channel::<LocalPlayerCommand>(10);
+            let player = MockPlayer { commands: Arc::new(Mutex::new(Vec::new())) };
+
+            // Empty channel continues
+            assert_eq!(handle_host_commands(&receiver, Some(&player)), HostAction::Continue);
+
+            // Dropping sender disconnects the channel
+            drop(sender);
+            assert_eq!(handle_host_commands(&receiver, Some(&player)), HostAction::Shutdown);
+        }
+
+        #[test]
+        fn host_exits_after_shutdown() {
+            let (sender, receiver) = sync_channel::<LocalPlayerCommand>(10);
+            let player = MockPlayer { commands: Arc::new(Mutex::new(Vec::new())) };
+
+            sender.send(LocalPlayerCommand::Shutdown).unwrap();
+            assert_eq!(handle_host_commands(&receiver, Some(&player)), HostAction::Shutdown);
+            let sent = player.commands.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(matches!(sent[0], LocalPlayerCommand::Shutdown));
+        }
+
+        #[test]
+        fn player_cleanup_runs_on_every_shutdown_path() {
+            // Path 1: Normal Shutdown command
+            {
+                let (sender, receiver) = sync_channel::<LocalPlayerCommand>(10);
+                let player = MockPlayer { commands: Arc::new(Mutex::new(Vec::new())) };
+                sender.send(LocalPlayerCommand::Shutdown).unwrap();
+                let action = handle_host_commands(&receiver, Some(&player));
+                assert_eq!(action, HostAction::Shutdown);
+                cleanup_player(Some(&player));
+                let sent = player.commands.lock().unwrap();
+                assert!(sent.iter().any(|cmd| matches!(cmd, LocalPlayerCommand::Shutdown)));
+            }
+
+            // Path 2: Channel disconnection (parent termination)
+            {
+                let (sender, receiver) = sync_channel::<LocalPlayerCommand>(10);
+                let player = MockPlayer { commands: Arc::new(Mutex::new(Vec::new())) };
+                drop(sender);
+                let action = handle_host_commands(&receiver, Some(&player));
+                assert_eq!(action, HostAction::Shutdown);
+                cleanup_player(Some(&player));
+                let sent = player.commands.lock().unwrap();
+                assert!(sent.iter().any(|cmd| matches!(cmd, LocalPlayerCommand::Shutdown)));
+            }
+        }
+
+        #[test]
+        fn parent_termination_does_not_leave_helper_alive() {
+            let helper_exe = std::env::current_exe().ok().and_then(|p| {
+                let dir = p.parent()?;
+                let candidate1 = dir.join("mellowdeck-player-host.exe");
+                if candidate1.is_file() {
+                    return Some(candidate1);
+                }
+                let candidate2 = dir.parent()?.join("mellowdeck-player-host.exe");
+                if candidate2.is_file() {
+                    return Some(candidate2);
+                }
+                None
+            });
+
+            if let Some(exe) = helper_exe {
+                let mut child = std::process::Command::new(&exe)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("spawn helper");
+
+                // Drop stdin immediately, simulating parent exit / closed pipe
+                drop(child.stdin.take());
+
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut exited = false;
+                while std::time::Instant::now() < deadline {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        exited = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+
+                if !exited {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+                assert!(exited, "helper process did not terminate after parent stdin closed");
+            }
+        }
+
+        #[test]
+        fn host_exits_promptly_after_shutdown_command_process() {
+            let helper_exe = std::env::current_exe().ok().and_then(|p| {
+                let dir = p.parent()?;
+                let candidate1 = dir.join("mellowdeck-player-host.exe");
+                if candidate1.is_file() {
+                    return Some(candidate1);
+                }
+                let candidate2 = dir.parent()?.join("mellowdeck-player-host.exe");
+                if candidate2.is_file() {
+                    return Some(candidate2);
+                }
+                None
+            });
+
+            if let Some(exe) = helper_exe {
+                let mut child = std::process::Command::new(&exe)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("spawn helper");
+
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = writeln!(stdin, r#"{{"type":"shutdown"}}"#);
+                    let _ = stdin.flush();
+                }
+
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut exited = false;
+                while std::time::Instant::now() < deadline {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        exited = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+
+                if !exited {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+                assert!(exited, "helper process did not terminate after shutdown command");
+            }
+        }
     }
 }

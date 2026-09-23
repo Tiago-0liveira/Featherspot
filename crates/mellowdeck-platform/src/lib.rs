@@ -3,7 +3,7 @@
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::{Mutex, mpsc},
+    sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
 
@@ -65,6 +65,9 @@ pub struct BackgroundLocalPlayer {
     events: Mutex<mpsc::Receiver<LocalPlayerEvent>>,
     commands: mpsc::SyncSender<LocalPlayerCommand>,
     ready: Mutex<bool>,
+    pid: Mutex<Option<u32>>,
+    device_id: Mutex<Option<String>>,
+    shutdown_reason: Arc<Mutex<Option<String>>>,
     #[cfg(target_os = "windows")]
     child: Mutex<Option<Child>>,
     #[cfg(target_os = "windows")]
@@ -76,15 +79,31 @@ impl BackgroundLocalPlayer {
     pub fn start() -> Self {
         let (event_sender, events) = mpsc::sync_channel(64);
         let (commands, command_receiver) = mpsc::sync_channel(64);
+        let shutdown_reason = Arc::new(Mutex::new(None));
         #[cfg(target_os = "windows")]
         {
-            let executable = std::env::current_exe().ok().and_then(|path| {
-                path.parent().map(|directory| directory.join("mellowdeck-player-host.exe"))
-            });
+            let executable =
+                std::env::var_os("MELLOWDECK_PLAYER_HOST").map(PathBuf::from).or_else(|| {
+                    std::env::current_exe().ok().and_then(|path| {
+                        let directory = path.parent()?;
+                        let candidate1 = directory.join("mellowdeck-player-host.exe");
+                        if candidate1.is_file() {
+                            return Some(candidate1);
+                        }
+                        let candidate2 =
+                            directory.join("helpers").join("mellowdeck-player-host.exe");
+                        if candidate2.is_file() {
+                            return Some(candidate2);
+                        }
+                        None
+                    })
+                });
             if let Some(executable) = executable.filter(|path| path.is_file())
                 && let Ok(mut child) =
                     Command::new(executable).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()
             {
+                let pid = child.id();
+                tracing::info!(pid, "spawned player-host process");
                 let mut threads = Vec::new();
                 if let Some(mut stdin) = child.stdin.take() {
                     let handle = std::thread::spawn(move || {
@@ -103,13 +122,19 @@ impl BackgroundLocalPlayer {
                 }
                 if let Some(stdout) = child.stdout.take() {
                     let sender = event_sender.clone();
-                    let handle = std::thread::spawn(move || forward_host_events(stdout, &sender));
+                    let reason_clone = Arc::clone(&shutdown_reason);
+                    let handle = std::thread::spawn(move || {
+                        forward_host_events(stdout, &sender, &reason_clone);
+                    });
                     threads.push(handle);
                 }
                 return Self {
                     events: Mutex::new(events),
                     commands,
                     ready: Mutex::new(false),
+                    pid: Mutex::new(Some(pid)),
+                    device_id: Mutex::new(None),
+                    shutdown_reason,
                     child: Mutex::new(Some(child)),
                     threads: Mutex::new(threads),
                 };
@@ -124,6 +149,9 @@ impl BackgroundLocalPlayer {
             events: Mutex::new(events),
             commands,
             ready: Mutex::new(false),
+            pid: Mutex::new(None),
+            device_id: Mutex::new(None),
+            shutdown_reason,
             #[cfg(target_os = "windows")]
             child: Mutex::new(None),
             #[cfg(target_os = "windows")]
@@ -154,8 +182,10 @@ impl BackgroundLocalPlayer {
         };
 
         if let Some(event) = maybe_event {
-            if matches!(event, LocalPlayerEvent::Ready { .. }) {
+            if let LocalPlayerEvent::Ready { ref device_id } = event {
                 *self.ready.lock().map_err(|_| poisoned())? = true;
+                *self.device_id.lock().map_err(|_| poisoned())? = Some(device_id.to_string());
+                tracing::info!(%device_id, "local player host ready with device ID");
             } else if matches!(
                 event,
                 LocalPlayerEvent::Unavailable
@@ -163,6 +193,7 @@ impl BackgroundLocalPlayer {
                     | LocalPlayerEvent::AccountError(_)
             ) {
                 *self.ready.lock().map_err(|_| poisoned())? = false;
+                *self.device_id.lock().map_err(|_| poisoned())? = None;
             }
             return Ok(Some(event));
         }
@@ -178,18 +209,63 @@ impl BackgroundLocalPlayer {
         self.ready.lock().map_err(|_| poisoned()).map(|ready| *ready)
     }
 
-    /// Deterministically asks the host to end. It is safe to call more than once.
+    /// Returns the process ID of the spawned player-host process, if active.
     ///
     /// # Errors
     ///
     /// Returns an error if lifecycle state has been poisoned.
-    pub fn shutdown(&self) -> Result<()> {
+    pub fn pid(&self) -> Result<Option<u32>> {
+        self.pid.lock().map_err(|_| poisoned()).map(|pid| *pid)
+    }
+
+    /// Returns the active Spotify Web Playback SDK device ID, if ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if lifecycle state has been poisoned.
+    pub fn device_id(&self) -> Result<Option<String>> {
+        self.device_id.lock().map_err(|_| poisoned()).map(|id| id.clone())
+    }
+
+    /// Returns the helper shutdown reason, if helper has terminated or shut down.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if lifecycle state has been poisoned.
+    pub fn shutdown_reason(&self) -> Result<Option<String>> {
+        self.shutdown_reason.lock().map_err(|_| poisoned()).map(|reason| reason.clone())
+    }
+
+    /// Explicitly shuts down the helper with an associated reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if lifecycle state has been poisoned.
+    pub fn shutdown_with_reason(&self, reason: &str) -> Result<()> {
+        let mut shutdown_guard = self.shutdown_reason.lock().map_err(|_| poisoned())?;
+        if shutdown_guard.is_none() {
+            tracing::info!(reason, "shutting down player-host helper");
+            *shutdown_guard = Some(reason.to_string());
+        }
         let _ = self.commands.send(LocalPlayerCommand::Shutdown);
         *self.ready.lock().map_err(|_| poisoned())? = false;
+        *self.device_id.lock().map_err(|_| poisoned())? = None;
         #[cfg(target_os = "windows")]
         {
             let child = self.child.lock().map_err(|_| poisoned())?.take();
             if let Some(mut child) = child {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                let mut exited = false;
+                while std::time::Instant::now() < deadline {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        exited = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                if !exited {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
             }
             let handles = std::mem::take(&mut *self.threads.lock().map_err(|_| poisoned())?);
@@ -199,10 +275,23 @@ impl BackgroundLocalPlayer {
         }
         Ok(())
     }
+
+    /// Deterministically asks the host to end. It is safe to call more than once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if lifecycle state has been poisoned.
+    pub fn shutdown(&self) -> Result<()> {
+        self.shutdown_with_reason("normal shutdown")
+    }
 }
 
 #[cfg(target_os = "windows")]
-fn forward_host_events(stdout: impl std::io::Read, sender: &mpsc::SyncSender<LocalPlayerEvent>) {
+fn forward_host_events(
+    stdout: impl std::io::Read,
+    sender: &mpsc::SyncSender<LocalPlayerEvent>,
+    shutdown_reason: &Mutex<Option<String>>,
+) {
     for line in BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
         if let Ok(envelope) = mellowdeck_playback::parse_event(&line) {
             let event = match envelope.payload {
@@ -243,6 +332,13 @@ fn forward_host_events(stdout: impl std::io::Read, sender: &mpsc::SyncSender<Loc
             };
             let _ = sender.send(event);
         }
+    }
+    if let Ok(mut reason) = shutdown_reason.lock()
+        && reason.is_none()
+    {
+        let unexpected = "player-host process exited unexpectedly".to_string();
+        tracing::warn!(reason = %unexpected, "local player host terminated");
+        *reason = Some(unexpected);
     }
     let _ = sender.send(LocalPlayerEvent::Unavailable);
 }
@@ -417,5 +513,109 @@ mod tests {
         let player = BackgroundLocalPlayer::start();
         player.shutdown().unwrap();
         player.shutdown().unwrap();
+    }
+
+    #[test]
+    fn background_host_tracks_device_id_and_shutdown_reason() {
+        let player = BackgroundLocalPlayer::start();
+        assert_eq!(player.device_id().unwrap(), None);
+        assert_eq!(player.shutdown_reason().unwrap(), None);
+        player.shutdown_with_reason("test shutdown").unwrap();
+        assert_eq!(player.shutdown_reason().unwrap().as_deref(), Some("test shutdown"));
+        assert_eq!(player.device_id().unwrap(), None);
+    }
+
+    #[test]
+    fn repeated_connect_commands_do_not_create_duplicate_connections() {
+        use std::io::Write as _;
+
+        let bridge_code = include_str!("../../../assets/web-player/player-bridge.js");
+        let script = format!(
+            r"
+let listeners = {{}};
+let connectCalls = 0;
+let disconnectCalls = 0;
+let posted = [];
+
+class MockPlayer {{
+  constructor(opts) {{ this.opts = opts; }}
+  addListener(evt, cb) {{ listeners[evt] = cb; }}
+  async connect() {{ connectCalls++; return true; }}
+  disconnect() {{ disconnectCalls++; }}
+}}
+
+global.window = {{
+  ipc: {{ postMessage: (msg) => posted.push(JSON.parse(msg)) }},
+  Spotify: {{ Player: MockPlayer }},
+  addEventListener: (evt, cb) => {{ if (evt === 'message') global.onMsg = cb; }}
+}};
+
+{bridge_code}
+
+async function run() {{
+  // 1. Initial connect
+  global.onMsg({{ source: global.window, data: {{ version: 1, id: 1, payload: {{ type: 'connect' }} }} }});
+  await new Promise(r => setTimeout(r, 10));
+  if (connectCalls !== 1) throw new Error('Expected 1 connect call, got ' + connectCalls);
+
+  // 2. Duplicate connect while connecting/connected must be ignored
+  global.onMsg({{ source: global.window, data: {{ version: 1, id: 2, payload: {{ type: 'connect' }} }} }});
+  await new Promise(r => setTimeout(r, 10));
+  if (connectCalls !== 1) throw new Error('Duplicate connect was not ignored while connecting');
+
+  // 3. Mark ready
+  listeners['ready']({{ device_id: 'test-device-id' }});
+
+  // 4. Duplicate connect while connected must be ignored
+  global.onMsg({{ source: global.window, data: {{ version: 1, id: 3, payload: {{ type: 'connect' }} }} }});
+  await new Promise(r => setTimeout(r, 10));
+  if (connectCalls !== 1) throw new Error('Duplicate connect was not ignored while connected');
+
+  // 5. Disconnect resets flags
+  global.onMsg({{ source: global.window, data: {{ version: 1, id: 4, payload: {{ type: 'disconnect' }} }} }});
+  await new Promise(r => setTimeout(r, 10));
+  if (disconnectCalls !== 1) throw new Error('Expected 1 disconnect call');
+
+  // 6. Connect after disconnect succeeds
+  global.onMsg({{ source: global.window, data: {{ version: 1, id: 5, payload: {{ type: 'connect' }} }} }});
+  await new Promise(r => setTimeout(r, 10));
+  if (connectCalls !== 2) throw new Error('Expected 2nd connect call after disconnect, got ' + connectCalls);
+
+  // 7. not_ready resets flags
+  listeners['not_ready']();
+
+  // 8. Connect after not_ready succeeds
+  global.onMsg({{ source: global.window, data: {{ version: 1, id: 6, payload: {{ type: 'connect' }} }} }});
+  await new Promise(r => setTimeout(r, 10));
+  if (connectCalls !== 3) throw new Error('Expected 3rd connect call after not_ready, got ' + connectCalls);
+
+  // 9. Shutdown resets flags and disconnects
+  global.onMsg({{ source: global.window, data: {{ version: 1, id: 7, payload: {{ type: 'shutdown' }} }} }});
+  await new Promise(r => setTimeout(r, 10));
+  if (disconnectCalls !== 2) throw new Error('Expected 2 disconnect calls on shutdown, got ' + disconnectCalls);
+}}
+
+run().catch(err => {{
+  console.error(err);
+  process.exit(1);
+}});
+"
+        );
+        if let Ok(mut child) = std::process::Command::new("node")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(script.as_bytes());
+            }
+            let output = child.wait_with_output().expect("node execution");
+            assert!(
+                output.status.success(),
+                "node script failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }
