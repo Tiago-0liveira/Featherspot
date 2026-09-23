@@ -55,9 +55,9 @@ jobs:
           ./scripts/generate-windows-sboms.ps1 -ReleaseTag v0.0.0 -OutputDir dist/ci-sbom
 
   release:
-    name: Publish Windows release
+    name: Publish release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [windows]
+    needs: [portable, windows]
     permissions:
       actions: read
       contents: write
