@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 use std::{
     env,
     io::{self, Write as _},
@@ -7,18 +5,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use mellowdeck_cli::{
+use crate::{
     AppState, Effect, HitMap, LoadState, Notice, NoticeKind, PlaybackState, Route,
     artwork::ArtworkManager,
     dispatch_key, dispatch_mouse,
     render::render_with_artwork,
     service::{ServiceHandle, ServiceResponse},
     session_state::{CliSessionState, CliSessionStore, PersistedTrack},
+};
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use mellowdeck_core::{
     AppError, CliSettings, CredentialStore, ErrorKind, LocalPlayerCommand, LocalPlayerEvent, Result,
@@ -117,16 +115,57 @@ impl Session {
     }
 }
 
-fn main() {
-    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
-        println!(
-            "mellowdeck-cli {}",
-            option_env!("MELLOWDECK_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
-        );
-        return;
+pub fn entry() {
+    let first_arg = env::args().nth(1);
+    match first_arg.as_deref() {
+        Some("--version" | "-V" | "version") => {
+            let exe = env::args().next().unwrap_or_default().to_lowercase();
+            let name = if exe.contains("mellowdeck") { "mellowdeck-cli" } else { "Featherspot" };
+            let version = option_env!("FEATHERSPOT_VERSION")
+                .or(option_env!("MELLOWDECK_VERSION"))
+                .unwrap_or(env!("CARGO_PKG_VERSION"));
+            println!("{name} {version}");
+            return;
+        }
+        Some("update") => {
+            println!("Checking for updates...");
+            let repo = env::var("FEATHERSPOT_REPO")
+                .unwrap_or_else(|_| crate::updater::github::DEFAULT_REPO.to_string());
+            let current_version = env!("CARGO_PKG_VERSION");
+            match crate::updater::update(&repo, current_version) {
+                Ok(crate::updater::UpdateSummary::AlreadyUpToDate { .. }) => {
+                    println!("Featherspot is up to date");
+                }
+                Ok(crate::updater::UpdateSummary::Updated { previous_version, new_version }) => {
+                    println!("Updating {previous_version} → {new_version}");
+                    println!("✓ Featherspot updated successfully");
+                }
+                Err(err) => {
+                    eprintln!("Update failed: {err}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Some("--help" | "-h" | "help") => {
+            let exe = env::args().next().unwrap_or_default().to_lowercase();
+            let name = if exe.contains("mellowdeck") { "mellowdeck-cli" } else { "featherspot" };
+            println!("Featherspot - Spotify terminal client\n");
+            println!("Usage: {name} [COMMAND]\n");
+            println!("Commands:");
+            println!("  update    Check for and install updates from GitHub Releases");
+            println!("  version   Print version information");
+            println!("  help      Print this help message\n");
+            println!("Options:");
+            println!("  -V, --version   Print version information");
+            println!("  -h, --help      Print help information");
+            return;
+        }
+        _ => {}
     }
+
     if let Err(error) = run() {
-        eprintln!("mellowdeck-cli: {error}");
+        eprintln!("featherspot: {error}");
     }
 }
 
@@ -189,7 +228,20 @@ fn run() -> Result<()> {
     let mut playback_polled = Instant::now();
     let mut fast_polls = FastPollTracker::default();
 
+    let (update_tx, update_rx) = std::sync::mpsc::channel();
+    if let Ok(paths) = AppPaths::discover() {
+        crate::updater::spawn_background_check(
+            paths.data,
+            env!("CARGO_PKG_VERSION").to_string(),
+            None,
+            update_tx,
+        );
+    }
+
     while !state.quit {
+        if let Ok(update_notice) = update_rx.try_recv() {
+            state.notice = Some(Notice { kind: NoticeKind::Info, text: update_notice });
+        }
         for item in state.queue_upcoming.iter().take(5) {
             if let Some(url) = &item.artwork_url {
                 artwork.prefetch(url);
@@ -359,7 +411,7 @@ fn handle_response(
                 return Ok(());
             }
             if playback.playing {
-                if state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker) {
+                if state.overlay == Some(crate::Overlay::DevicePicker) {
                     state.overlay = None;
                 }
                 state.clear_error_notice();
@@ -421,8 +473,8 @@ fn handle_response(
             };
         }
         ServiceResponse::PlaylistPicker { playlists, pending_uri } => {
-            if let Some(mellowdeck_cli::Overlay::PlaylistPicker { selected, .. }) = state.overlay {
-                state.overlay = Some(mellowdeck_cli::Overlay::PlaylistPicker {
+            if let Some(crate::Overlay::PlaylistPicker { selected, .. }) = state.overlay {
+                state.overlay = Some(crate::Overlay::PlaylistPicker {
                     selected: selected.min(playlists.len().saturating_sub(1)),
                     playlists,
                     pending_uri,
@@ -434,7 +486,7 @@ fn handle_response(
                 state.notice =
                     Some(Notice { kind: NoticeKind::Success, text: command_success(&effect) });
                 if matches!(effect, Effect::PlayTrack { .. } | Effect::PlayContext { .. })
-                    && state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker)
+                    && state.overlay == Some(crate::Overlay::DevicePicker)
                 {
                     state.overlay = None;
                 }
@@ -529,7 +581,7 @@ fn handle_response(
                     };
                 }
                 if error.kind == ErrorKind::Unavailable && state.target_device_id().is_none() {
-                    state.overlay = Some(mellowdeck_cli::Overlay::DevicePicker);
+                    state.overlay = Some(crate::Overlay::DevicePicker);
                 }
                 worker.send(Effect::RefreshPlayback)?;
                 if matches!(effect, Effect::Enqueue(_)) {
@@ -559,7 +611,7 @@ fn handle_local_player_events(
                 if state.playback.device_id.is_none() {
                     state.playback.device_id = Some(device_id);
                 }
-                if state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker) {
+                if state.overlay == Some(crate::Overlay::DevicePicker) {
                     state.overlay = None;
                 }
                 state.clear_error_notice();
@@ -601,7 +653,7 @@ fn handle_local_player_events(
             } => {
                 if local_player_selected(state) {
                     if playing {
-                        if state.overlay == Some(mellowdeck_cli::Overlay::DevicePicker) {
+                        if state.overlay == Some(crate::Overlay::DevicePicker) {
                             state.overlay = None;
                         }
                         state.clear_error_notice();
@@ -925,7 +977,7 @@ fn command_success(effect: &Effect) -> String {
     }
 }
 
-fn update_settings_rows(page: &mut mellowdeck_cli::PageState, state: &AppState) {
+fn update_settings_rows(page: &mut crate::PageState, state: &AppState) {
     for item in page.sections.iter_mut().flat_map(|section| &mut section.items) {
         item.title = match item.id.as_str() {
             "artwork" => format!("Artwork: {:?}", state.artwork),

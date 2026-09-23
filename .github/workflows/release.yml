@@ -7,12 +7,16 @@ permissions:
   contents: read
 
 jobs:
-  windows-release:
+  version:
     runs-on: windows-latest
     timeout-minutes: 180
     permissions:
       actions: read
       contents: write
+    outputs:
+      skip: ${{ steps.version.outputs.skip }}
+      tag: ${{ steps.version.outputs.tag }}
+      number: ${{ steps.version.outputs.number }}
     steps:
       - name: Wait for earlier main CI runs
         uses: actions/github-script@v8
@@ -63,7 +67,11 @@ jobs:
                 "Mellowdeck-$($existing[0])-windows-x64-portable-unsigned.zip",
                 "Mellowdeck-$($existing[0])-cli.cdx.json",
                 "Mellowdeck-$($existing[0])-player-host.cdx.json",
-                'install.ps1', 'install.cmd', 'SHA256SUMS.txt'
+                'featherspot-windows-x86_64.exe',
+                'featherspot-linux-x86_64',
+                'featherspot-macos-x86_64',
+                'featherspot-macos-aarch64',
+                'install.ps1', 'install.cmd', 'checksums.txt', 'SHA256SUMS.txt'
               )
               $assetNames = @($release.assets | ForEach-Object { $_.name })
               if (-not $release.isDraft -and @($expected | Where-Object { $_ -notin $assetNames }).Count -eq 0) {
@@ -113,50 +121,129 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "number=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
 
+  build-linux:
+    name: Build Linux binary
+    needs: [version]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
       - uses: dtolnay/rust-toolchain@master
-        if: steps.version.outputs.skip != 'true'
+        with:
+          toolchain: 1.98.1
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+      - name: Build featherspot Linux binary
+        env:
+          FEATHERSPOT_VERSION: ${{ needs.version.outputs.number }}
+          MELLOWDECK_VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          cargo build --locked --release -p mellowdeck-cli --bin featherspot
+          mkdir -p dist
+          cp target/release/featherspot dist/featherspot-linux-x86_64
+          chmod +x dist/featherspot-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: featherspot-linux-x86_64
+          path: dist/featherspot-linux-x86_64
+
+  build-macos:
+    name: Build macOS binaries
+    needs: [version]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+      - name: Build featherspot macOS binaries
+        env:
+          FEATHERSPOT_VERSION: ${{ needs.version.outputs.number }}
+          MELLOWDECK_VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          cargo build --locked --release --target x86_64-apple-darwin -p mellowdeck-cli --bin featherspot
+          cargo build --locked --release --target aarch64-apple-darwin -p mellowdeck-cli --bin featherspot
+          mkdir -p dist
+          cp target/x86_64-apple-darwin/release/featherspot dist/featherspot-macos-x86_64
+          cp target/aarch64-apple-darwin/release/featherspot dist/featherspot-macos-aarch64
+          chmod +x dist/featherspot-macos-x86_64 dist/featherspot-macos-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: featherspot-macos
+          path: dist/featherspot-macos-*
+
+  windows-release:
+    name: Package and publish release
+    needs: [version, build-linux, build-macos]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Rust
-        if: steps.version.outputs.skip != 'true'
         uses: Swatinem/rust-cache@v2
 
-      - name: Build both executables
-        if: steps.version.outputs.skip != 'true'
+      - name: Build Windows executables
         env:
-          MELLOWDECK_VERSION: ${{ steps.version.outputs.number }}
+          FEATHERSPOT_VERSION: ${{ needs.version.outputs.number }}
+          MELLOWDECK_VERSION: ${{ needs.version.outputs.number }}
         run: cargo build --locked --release --target x86_64-pc-windows-msvc -p mellowdeck-cli -p mellowdeck-player-host
 
       - name: Check release version
-        if: steps.version.outputs.skip != 'true'
         shell: pwsh
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.number }}
+          RELEASE_VERSION: ${{ needs.version.outputs.number }}
         run: |
-          $reported = & target/x86_64-pc-windows-msvc/release/mellowdeck-cli.exe --version
-          if ($reported -ne "mellowdeck-cli $env:RELEASE_VERSION") {
+          $reported = & target/x86_64-pc-windows-msvc/release/featherspot.exe --version
+          if ($reported -ne "Featherspot $env:RELEASE_VERSION") {
             throw "The CLI reports '$reported' instead of release version $env:RELEASE_VERSION."
           }
 
       - name: Install packaging tools
-        if: steps.version.outputs.skip != 'true'
         run: |
           dotnet tool install --global wix --version 4.0.6
           cargo install cargo-cyclonedx --version 0.5.9 --locked
           if ($LASTEXITCODE -ne 0) { throw 'Could not install cargo-cyclonedx.' }
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: featherspot-linux-x86_64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: featherspot-macos
+          path: dist
+
       - name: Package release assets
-        if: steps.version.outputs.skip != 'true'
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.version.outputs.number }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.version.outputs.number }}
         run: |
           New-Item -ItemType Directory -Force dist/portable | Out-Null
           $built = 'target/x86_64-pc-windows-msvc/release'
           Copy-Item "$built/mellowdeck-cli.exe" dist/portable/
+          Copy-Item "$built/featherspot.exe" dist/portable/
+          Copy-Item "$built/featherspot.exe" dist/featherspot-windows-x86_64.exe
           Copy-Item "$built/mellowdeck-player-host.exe" dist/portable/
           Copy-Item packaging/windows/portable/README.txt dist/portable/
           Compress-Archive -Path dist/portable/* -DestinationPath "dist/Mellowdeck-$env:RELEASE_TAG-windows-x64-portable-unsigned.zip"
@@ -167,19 +254,18 @@ jobs:
           Copy-Item install.ps1, install.cmd dist/
           Get-ChildItem dist -File | Sort-Object Name | ForEach-Object {
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
-          } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          } | Set-Content dist/checksums.txt -Encoding ascii
+          Copy-Item dist/checksums.txt dist/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
-        if: steps.version.outputs.skip != 'true'
         with:
-          name: Mellowdeck-${{ steps.version.outputs.tag }}-windows-x64-unsigned
+          name: Featherspot-${{ needs.version.outputs.tag }}-release-artifacts
           path: dist/*
 
       - name: Reserve release tag
-        if: steps.version.outputs.skip != 'true'
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
           git show-ref --verify --quiet "refs/tags/$env:RELEASE_TAG"
           if ($LASTEXITCODE -ne 0) {
@@ -190,14 +276,13 @@ jobs:
           }
 
       - name: Publish release
-        if: steps.version.outputs.skip != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
-          $notes = 'Unsigned experimental Windows x64 build. Spotify Premium and a configured Spotify Developer application are required for playback; local playback also requires Microsoft Edge WebView2 Evergreen Runtime.'
+          $notes = "Featherspot $env:RELEASE_TAG release. Multi-platform terminal Spotify client."
           $assets = @(Get-ChildItem -LiteralPath dist -File | ForEach-Object { $_.FullName })
           if ($assets.Count -eq 0) { throw 'No release assets were packaged.' }
           gh release view $env:RELEASE_TAG --json tagName 2>$null | Out-Null
@@ -205,7 +290,7 @@ jobs:
             gh release upload $env:RELEASE_TAG @assets --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Could not upload release assets.' }
           } else {
-            gh release create $env:RELEASE_TAG @assets --target $env:RELEASE_SHA --title "Mellowdeck $env:RELEASE_TAG" --notes $notes --draft
+            gh release create $env:RELEASE_TAG @assets --target $env:RELEASE_SHA --title "Featherspot $env:RELEASE_TAG" --notes $notes --draft
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the draft release.' }
           }
           gh release edit $env:RELEASE_TAG --draft=false --latest
