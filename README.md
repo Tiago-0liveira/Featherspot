@@ -116,9 +116,12 @@ Run the standard workspace checks before opening a change:
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo check --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
+
+See [Contributing](CONTRIBUTING.md) to enable the pre-commit hook.
 
 ## Privacy and local data
 
