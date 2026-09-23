@@ -12,7 +12,9 @@ use mellowdeck_spotify::{
 
 use crate::{
     Effect,
-    state::{BrowseItem, ContextPosition, EntityKind, LoadState, PageState, Route, Section},
+    state::{
+        BrowseItem, ContextPosition, EntityKind, LibraryTab, LoadState, PageState, Route, Section,
+    },
 };
 
 const PAGE_SIZE: u32 = 50;
@@ -22,6 +24,7 @@ pub enum ServiceResponse {
     Page(PageState),
     Playback(SpotifyPlayback),
     Queue { now: Option<BrowseItem>, upcoming: Vec<BrowseItem> },
+    PlaylistPicker { playlists: Vec<BrowseItem>, pending_uri: String },
     Command { effect: Effect, result: Result<()> },
 }
 
@@ -89,6 +92,10 @@ impl ServiceHandle {
                 | Effect::Transfer(_)
                 | Effect::RefreshPlayback
                 | Effect::RefreshQueue
+                | Effect::SetSaved { .. }
+                | Effect::AddToPlaylist { .. }
+                | Effect::RemoveFromPlaylist { .. }
+                | Effect::RenamePlaylist { .. }
         );
         if priority {
             self.priority.send(Request::Effect(effect)).map_err(channel_error)
@@ -153,8 +160,8 @@ fn worker_loop(
 
 fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse {
     match effect.clone() {
-        Effect::LoadPage { route, generation, offset, query } => {
-            match load_page(api, token, route, generation, offset, &query) {
+        Effect::LoadPage { route, generation, offset, query, tab } => {
+            match load_page(api, token, route, generation, offset, &query, tab) {
                 Ok(page) => ServiceResponse::Page(page),
                 Err(error) => ServiceResponse::Command { effect, result: Err(error) },
             }
@@ -210,6 +217,38 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
         Effect::Transfer(id) => {
             ServiceResponse::Command { effect, result: api.transfer(token, &id) }
         }
+        Effect::SetSaved { uri, saved } => {
+            let result = if saved {
+                api.save_library_items(token, &[&uri])
+            } else {
+                api.remove_library_items(token, &[&uri])
+            };
+            ServiceResponse::Command { effect, result }
+        }
+        Effect::AddToPlaylist { playlist_id, track_uri } => {
+            let result = api.add_to_playlist(token, &playlist_id, &[&track_uri]).map(|_| ());
+            ServiceResponse::Command { effect, result }
+        }
+        Effect::RemoveFromPlaylist { playlist_uri, track_uri } => {
+            let playlist_id =
+                playlist_uri.strip_prefix("spotify:playlist:").unwrap_or(&playlist_uri);
+            let result = api.remove_from_playlist(token, playlist_id, &[&track_uri]).map(|_| ());
+            ServiceResponse::Command { effect, result }
+        }
+        Effect::RenamePlaylist { playlist_id, new_name } => {
+            let result = api.update_playlist(token, &playlist_id, &new_name);
+            ServiceResponse::Command { effect, result }
+        }
+        Effect::LoadPlaylistsForPicker { pending_uri } => {
+            match api.playlists_page(token, 0, PAGE_SIZE) {
+                Ok(page) => {
+                    let playlists =
+                        page.items.into_iter().map(|item| typed_item(item, None)).collect();
+                    ServiceResponse::PlaylistPicker { playlists, pending_uri }
+                }
+                Err(error) => ServiceResponse::Command { effect, result: Err(error) },
+            }
+        }
         Effect::OpenExternal(_) | Effect::SaveSettings => {
             ServiceResponse::Command { effect, result: Ok(()) }
         }
@@ -224,6 +263,7 @@ fn load_page(
     generation: u64,
     offset: u32,
     query: &str,
+    tab: Option<LibraryTab>,
 ) -> Result<PageState> {
     let mut page = PageState::loading(route.clone(), generation);
     match &route {
@@ -255,34 +295,43 @@ fn load_page(
             };
         }
         Route::Library => {
-            let (albums, playlists) = std::thread::scope(|s| {
-                let albums_h = s.spawn(|| api.saved_albums_page(token, offset, PAGE_SIZE));
-                let playlists_h = s.spawn(|| api.playlists_page(token, offset, PAGE_SIZE));
-                (
-                    albums_h.join().unwrap_or_else(|_| {
-                        Err(mellowdeck_core::AppError::new(
-                            mellowdeck_core::ErrorKind::Unavailable,
-                            "album fetch worker panicked",
-                        ))
-                    }),
-                    playlists_h.join().unwrap_or_else(|_| {
-                        Err(mellowdeck_core::AppError::new(
-                            mellowdeck_core::ErrorKind::Unavailable,
-                            "playlist fetch worker panicked",
-                        ))
-                    }),
-                )
-            });
-            let albums = albums?;
-            let playlists = playlists?;
-            page.title = "Library".into();
-            page.subtitle = "Albums and playlists".into();
-            page.next_offset = albums.next_offset.or(playlists.next_offset);
-            page.sections = vec![
-                typed_section("Albums", albums.items, None),
-                typed_section("Playlists", playlists.items, None),
-            ];
-            page.state = ready_or_empty(&page);
+            let active_tab = tab.unwrap_or(LibraryTab::LikedSongs);
+            page.library_tab = active_tab;
+            match active_tab {
+                LibraryTab::LikedSongs => {
+                    let liked = api.liked_tracks_page(token, offset, PAGE_SIZE)?;
+                    page.title = "Library".into();
+                    page.subtitle = "Liked Songs".into();
+                    page.next_offset = liked.next_offset;
+                    let items = liked
+                        .items
+                        .into_iter()
+                        .map(|item| {
+                            let mut bi = typed_item(item, Some("spotify:collection:tracks"));
+                            bi.saved = Some(true);
+                            bi
+                        })
+                        .collect();
+                    page.sections = vec![Section { title: "Liked Songs".into(), items }];
+                    page.state = ready_or_empty(&page);
+                }
+                LibraryTab::Albums => {
+                    let albums = api.saved_albums_page(token, offset, PAGE_SIZE)?;
+                    page.title = "Library".into();
+                    page.subtitle = "Albums".into();
+                    page.next_offset = albums.next_offset;
+                    page.sections = vec![typed_section("Albums", albums.items, None)];
+                    page.state = ready_or_empty(&page);
+                }
+                LibraryTab::Playlists => {
+                    let playlists = api.playlists_page(token, offset, PAGE_SIZE)?;
+                    page.title = "Library".into();
+                    page.subtitle = "Playlists".into();
+                    page.next_offset = playlists.next_offset;
+                    page.sections = vec![typed_section("Playlists", playlists.items, None)];
+                    page.state = ready_or_empty(&page);
+                }
+            }
         }
         Route::Search => {
             page.title = "Search".into();
@@ -294,13 +343,21 @@ fn load_page(
                 page.next_offset = results.next_offset;
                 page.sections = vec![typed_section("Results", results.items, None)];
                 page.state = ready_or_empty(&page);
+                batch_populate_saved_tracks(api, token, &mut page);
             }
         }
-        Route::Album { uri, .. } => apply_detail(&mut page, api.album_page(token, uri)?),
+        Route::Album { uri, .. } => {
+            apply_detail(&mut page, api.album_page(token, uri)?);
+            batch_populate_saved_tracks(api, token, &mut page);
+        }
         Route::Playlist { uri, .. } => {
             apply_detail(&mut page, api.playlist_page(token, uri, offset, PAGE_SIZE)?);
+            batch_populate_saved_tracks(api, token, &mut page);
         }
-        Route::Artist { uri, .. } => apply_detail(&mut page, api.artist_page(token, uri)?),
+        Route::Artist { uri, .. } => {
+            apply_detail(&mut page, api.artist_page(token, uri)?);
+            batch_populate_saved_tracks(api, token, &mut page);
+        }
         Route::Queue => {
             let queue = api.queue(token)?;
             page.title = "Queue".into();
@@ -323,6 +380,7 @@ fn load_page(
             });
             page.sections = sections;
             page.state = ready_or_empty(&page);
+            batch_populate_saved_tracks(api, token, &mut page);
         }
         Route::Devices => {
             page.title = "Devices".into();
@@ -357,6 +415,7 @@ fn load_page(
                         album: None,
                         duration_ms: None,
                         available: !device.restricted,
+                        saved: None,
                         context: None,
                         restricted: device.restricted,
                     })
@@ -471,6 +530,7 @@ fn display_item(item: SpotifyDisplayItem, fallback: Option<EntityKind>) -> Brows
         available: true,
         context: None,
         restricted: false,
+        saved: None,
     }
 }
 
@@ -505,6 +565,42 @@ fn typed_item(item: SpotifyBrowseItem, context: Option<&str>) -> BrowseItem {
             .zip(position)
             .map(|(uri, position)| ContextPosition { uri: uri.to_owned(), position }),
         restricted: false,
+        saved: item.saved,
+    }
+}
+
+fn batch_populate_saved_tracks(api: &SpotifyWebApi, token: &str, page: &mut PageState) {
+    let mut track_ids = Vec::new();
+    for section in &page.sections {
+        for item in &section.items {
+            if item.kind == EntityKind::Track
+                && item.saved.is_none()
+                && let Some(uri) = &item.uri
+            {
+                let id = uri.strip_prefix("spotify:track:").unwrap_or(uri);
+                track_ids.push(id.to_string());
+            }
+        }
+    }
+    if track_ids.is_empty() {
+        return;
+    }
+    let query_ids = if track_ids.len() > 50 { &track_ids[..50] } else { &track_ids[..] };
+    let id_refs: Vec<&str> = query_ids.iter().map(String::as_str).collect();
+    if let Ok(saved_flags) = api.check_saved_tracks(token, &id_refs) {
+        let mut idx = 0;
+        for section in &mut page.sections {
+            for item in &mut section.items {
+                if item.kind == EntityKind::Track
+                    && item.saved.is_none()
+                    && item.uri.is_some()
+                    && idx < saved_flags.len()
+                {
+                    item.saved = Some(saved_flags[idx]);
+                    idx += 1;
+                }
+            }
+        }
     }
 }
 

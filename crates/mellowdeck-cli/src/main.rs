@@ -174,7 +174,13 @@ fn run() -> Result<()> {
         &worker,
         &local_player,
         vec![
-            Effect::LoadPage { route: Route::Home, generation: 0, offset: 0, query: String::new() },
+            Effect::LoadPage {
+                route: Route::Home,
+                generation: 0,
+                offset: 0,
+                query: String::new(),
+                tab: None,
+            },
             Effect::RefreshPlayback,
             Effect::RefreshQueue,
         ],
@@ -414,6 +420,15 @@ fn handle_response(
                 LoadState::Ready
             };
         }
+        ServiceResponse::PlaylistPicker { playlists, pending_uri } => {
+            if let Some(mellowdeck_cli::Overlay::PlaylistPicker { selected, .. }) = state.overlay {
+                state.overlay = Some(mellowdeck_cli::Overlay::PlaylistPicker {
+                    selected: selected.min(playlists.len().saturating_sub(1)),
+                    playlists,
+                    pending_uri,
+                });
+            }
+        }
         ServiceResponse::Command { effect, result } => match result {
             Ok(()) => {
                 state.notice =
@@ -487,7 +502,24 @@ fn handle_response(
             }
             Err(error) => {
                 fast_polls.cancel();
-                state.notice = Some(Notice { kind: NoticeKind::Error, text: actionable(&error) });
+                if let Effect::SetSaved { uri, saved } = &effect {
+                    let reverted = !*saved;
+                    for section in &mut state.page.sections {
+                        for track in &mut section.items {
+                            if track.uri.as_deref() == Some(uri.as_str()) {
+                                track.saved = Some(reverted);
+                            }
+                        }
+                    }
+                    state.page_cache.remove("library:liked");
+                    state.notice = Some(Notice {
+                        kind: NoticeKind::Error,
+                        text: "Could not update Spotify library".into(),
+                    });
+                } else {
+                    state.notice =
+                        Some(Notice { kind: NoticeKind::Error, text: actionable(&error) });
+                }
                 if matches!(effect, Effect::LoadPage { .. }) {
                     state.page.loading_more = false;
                     state.page.state = if state.page.sections.is_empty() {
@@ -869,6 +901,11 @@ fn request_next_page_if_needed(worker: &ServiceHandle, state: &mut AppState) -> 
             generation: state.generation,
             offset,
             query: state.search_query.clone(),
+            tab: if state.page.route == Route::Library {
+                Some(state.page.library_tab)
+            } else {
+                None
+            },
         })?;
     }
     Ok(())
@@ -879,6 +916,11 @@ fn command_success(effect: &Effect) -> String {
         Effect::Enqueue(_) => "Added to queue.".into(),
         Effect::Transfer(_) => "Playback device selected.".into(),
         Effect::PlayTrack { .. } | Effect::PlayContext { .. } => "Playback started.".into(),
+        Effect::SetSaved { saved: true, .. } => "♥ Added to Liked Songs".into(),
+        Effect::SetSaved { saved: false, .. } => "♡ Removed from Liked Songs".into(),
+        Effect::AddToPlaylist { .. } => "Added track to playlist.".into(),
+        Effect::RemoveFromPlaylist { .. } => "Removed track from playlist.".into(),
+        Effect::RenamePlaylist { new_name, .. } => format!("Renamed playlist to \"{new_name}\"."),
         _ => "Spotify updated.".into(),
     }
 }

@@ -63,8 +63,40 @@ pub enum FocusRegion {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LibraryTab {
     #[default]
+    LikedSongs,
     Albums,
     Playlists,
+}
+
+impl LibraryTab {
+    pub const ALL: [Self; 3] = [Self::LikedSongs, Self::Albums, Self::Playlists];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LikedSongs => "Liked Songs",
+            Self::Albums => "Albums",
+            Self::Playlists => "Playlists",
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::LikedSongs => Self::Albums,
+            Self::Albums => Self::Playlists,
+            Self::Playlists => Self::LikedSongs,
+        }
+    }
+
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::LikedSongs => Self::Playlists,
+            Self::Albums => Self::LikedSongs,
+            Self::Playlists => Self::Albums,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -176,6 +208,7 @@ pub struct BrowseItem {
     pub available: bool,
     pub context: Option<ContextPosition>,
     pub restricted: bool,
+    pub saved: Option<bool>,
 }
 
 impl BrowseItem {
@@ -195,6 +228,7 @@ impl BrowseItem {
             available: false,
             context: None,
             restricted: false,
+            saved: None,
         }
     }
 }
@@ -290,11 +324,21 @@ impl PageState {
             cursor: ListCursor::default(),
             state: LoadState::Loading,
             filter: String::new(),
-            library_tab: LibraryTab::Albums,
+            library_tab: LibraryTab::LikedSongs,
             search_filter: SearchFilter::All,
             next_offset: None,
             loading_more: false,
             generation,
+        }
+    }
+    pub fn cache_key(&self) -> String {
+        match self.route {
+            Route::Library => match self.library_tab {
+                LibraryTab::LikedSongs => "library:liked".into(),
+                LibraryTab::Albums => "library:albums".into(),
+                LibraryTab::Playlists => "library:playlists".into(),
+            },
+            _ => self.route.key(),
         }
     }
     pub fn flattened(&self) -> Vec<&BrowseItem> {
@@ -308,6 +352,7 @@ impl PageState {
                     || item.subtitle.to_lowercase().contains(&needle))
                     && match self.route {
                         Route::Library => match self.library_tab {
+                            LibraryTab::LikedSongs => item.kind == EntityKind::Track,
                             LibraryTab::Albums => item.kind == EntityKind::Album,
                             LibraryTab::Playlists => item.kind == EntityKind::Playlist,
                         },
@@ -369,13 +414,62 @@ impl PlaybackState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContextAction {
+    Play,
+    PlayNext,
+    AddToQueue,
+    Like,
+    Unlike,
+    AddToPlaylist,
+    RemoveFromPlaylist,
+    SaveAlbum,
+    RemoveSavedAlbum,
+    FollowArtist,
+    UnfollowArtist,
+    PlayContext,
+    ShuffleContext,
+    GoToAlbum,
+    GoToArtist,
+    RenamePlaylist,
+    DeletePlaylist,
+    OpenInSpotify,
+}
+
+impl ContextAction {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Play | Self::PlayContext => "Play",
+            Self::PlayNext => "Play next",
+            Self::AddToQueue => "Add to queue",
+            Self::Like => "Like",
+            Self::Unlike => "Unlike",
+            Self::AddToPlaylist => "Add to playlist…",
+            Self::RemoveFromPlaylist => "Remove from this playlist",
+            Self::SaveAlbum => "Save album",
+            Self::RemoveSavedAlbum => "Remove from library",
+            Self::FollowArtist => "Follow artist",
+            Self::UnfollowArtist => "Unfollow artist",
+            Self::ShuffleContext => "Shuffle",
+            Self::GoToAlbum => "Go to album",
+            Self::GoToArtist => "Go to artist",
+            Self::RenamePlaylist => "Rename playlist",
+            Self::DeletePlaylist => "Delete playlist",
+            Self::OpenInSpotify => "Open in Spotify",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Overlay {
     Menu,
     Help { query: String, editing: bool },
-    Actions { selected: usize },
+    Actions { selected: usize, actions: Vec<ContextAction> },
     Inspector,
     DevicePicker,
+    PlaylistPicker { selected: usize, playlists: Vec<BrowseItem>, pending_uri: String },
+    RenamePlaylist { playlist_id: String, name: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -396,6 +490,7 @@ pub struct Notice {
 #[derive(Debug)]
 pub struct AppState {
     pub page: PageState,
+    pub library_tab: LibraryTab,
     pub history: Vec<PageState>,
     pub focus: FocusRegion,
     pub sidebar: ListCursor,
@@ -439,6 +534,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             page: PageState::loading(Route::Home, 0),
+            library_tab: LibraryTab::LikedSongs,
             history: Vec::new(),
             focus: FocusRegion::Content,
             sidebar: ListCursor::default(),
@@ -558,12 +654,22 @@ impl AppState {
             self.history.push(self.page.clone());
         }
         self.generation = self.generation.saturating_add(1);
-        if let Some((cached, _)) = self.page_cache.get(&route.key()) {
+        let cache_key = match route {
+            Route::Library => match self.library_tab {
+                LibraryTab::LikedSongs => "library:liked".into(),
+                LibraryTab::Albums => "library:albums".into(),
+                LibraryTab::Playlists => "library:playlists".into(),
+            },
+            _ => route.key(),
+        };
+        if let Some((cached, _)) = self.page_cache.get(&cache_key) {
             let mut page = cached.clone();
             page.generation = self.generation;
             self.page = page;
         } else {
-            self.page = PageState::loading(route, self.generation);
+            let mut page = PageState::loading(route, self.generation);
+            page.library_tab = self.library_tab;
+            self.page = page;
         }
         self.overlay = None;
         self.text_entry = false;
@@ -606,6 +712,7 @@ impl AppState {
                     available: true,
                     context: None,
                     restricted: false,
+                    saved: None,
                 })
                 .collect();
             self.page.sections = vec![Section { title: "Recent searches".into(), items }];
@@ -663,7 +770,7 @@ impl AppState {
             return false;
         }
         if page.state == LoadState::Ready || matches!(page.state, LoadState::Partial(_)) {
-            self.page_cache.insert(page.route.key(), (page.clone(), Instant::now()));
+            self.page_cache.insert(page.cache_key(), (page.clone(), Instant::now()));
         }
         self.page = page;
         self.response_log.push_back(self.generation);
@@ -714,6 +821,7 @@ impl AppState {
             available: true,
             context: None,
             restricted: false,
+            saved: None,
         })
     }
     pub fn apply_track_to_playback(&mut self, item: &BrowseItem) {
@@ -739,6 +847,93 @@ impl AppState {
         self.playback.observed_at = Some(Instant::now());
         self.playback.cached_track = false;
     }
+}
+
+/// Central action resolver determining context actions for any entity.
+#[must_use]
+pub fn actions_for(item: &BrowseItem, route: &Route, _state: &AppState) -> Vec<ContextAction> {
+    let mut actions = Vec::new();
+    match item.kind {
+        EntityKind::Track => {
+            if item.available && item.uri.is_some() {
+                actions.push(ContextAction::Play);
+                actions.push(ContextAction::PlayNext);
+                actions.push(ContextAction::AddToQueue);
+            }
+            if item.saved == Some(true) {
+                actions.push(ContextAction::Unlike);
+            } else {
+                actions.push(ContextAction::Like);
+            }
+            if item.uri.is_some() {
+                actions.push(ContextAction::AddToPlaylist);
+            }
+            if matches!(route, Route::Playlist { .. }) {
+                actions.push(ContextAction::RemoveFromPlaylist);
+            }
+            if item.album.is_some() {
+                actions.push(ContextAction::GoToAlbum);
+            }
+            if item.artists.iter().any(|(_, uri)| uri.is_some()) {
+                actions.push(ContextAction::GoToArtist);
+            }
+            if item.external_url.is_some() || item.uri.is_some() {
+                actions.push(ContextAction::OpenInSpotify);
+            }
+        }
+        EntityKind::Album => {
+            actions.push(ContextAction::Play);
+            actions.push(ContextAction::ShuffleContext);
+            if item.saved == Some(true) {
+                actions.push(ContextAction::RemoveSavedAlbum);
+            } else {
+                actions.push(ContextAction::SaveAlbum);
+            }
+            if item.uri.is_some() {
+                actions.push(ContextAction::AddToPlaylist);
+            }
+            if item.artists.iter().any(|(_, uri)| uri.is_some()) {
+                actions.push(ContextAction::GoToArtist);
+            }
+            if item.external_url.is_some() || item.uri.is_some() {
+                actions.push(ContextAction::OpenInSpotify);
+            }
+        }
+        EntityKind::Artist => {
+            actions.push(ContextAction::Play);
+            if item.saved == Some(true) {
+                actions.push(ContextAction::UnfollowArtist);
+            } else {
+                actions.push(ContextAction::FollowArtist);
+            }
+            if item.external_url.is_some() || item.uri.is_some() {
+                actions.push(ContextAction::OpenInSpotify);
+            }
+        }
+        EntityKind::Playlist => {
+            actions.push(ContextAction::Play);
+            actions.push(ContextAction::ShuffleContext);
+            actions.push(ContextAction::RenamePlaylist);
+            if matches!(route, Route::Library) {
+                actions.push(ContextAction::DeletePlaylist);
+            }
+            if item.external_url.is_some() || item.uri.is_some() {
+                actions.push(ContextAction::OpenInSpotify);
+            }
+        }
+        EntityKind::Device => {
+            actions.push(ContextAction::Play);
+        }
+        EntityKind::Action => {
+            if item.id == "play-context" {
+                actions.push(ContextAction::Play);
+            } else if item.id == "open-external" {
+                actions.push(ContextAction::OpenInSpotify);
+            }
+        }
+        EntityKind::Message => {}
+    }
+    actions
 }
 
 #[cfg(test)]
@@ -798,6 +993,7 @@ mod tests {
             album: Some(("Test Album".into(), "spotify:album:456".into())),
             duration_ms: Some(210_000),
             available: true,
+            saved: None,
             context: None,
             restricted: false,
         };
@@ -985,5 +1181,134 @@ mod tests {
         // Selected device wins target_device_id
         state.selected_device_id = Some("selected-1".into());
         assert_eq!(state.target_device_id().as_deref(), Some("selected-1"));
+    }
+
+    #[test]
+    fn library_tab_cycling() {
+        let tab = LibraryTab::LikedSongs;
+        assert_eq!(tab.next(), LibraryTab::Albums);
+        assert_eq!(tab.next().next(), LibraryTab::Playlists);
+        assert_eq!(tab.next().next().next(), LibraryTab::LikedSongs);
+
+        assert_eq!(tab.previous(), LibraryTab::Playlists);
+        assert_eq!(tab.previous().previous(), LibraryTab::Albums);
+        assert_eq!(tab.previous().previous().previous(), LibraryTab::LikedSongs);
+    }
+
+    #[test]
+    fn actions_for_tracks() {
+        let state = AppState::default();
+        let track = BrowseItem {
+            id: "t1".into(),
+            kind: EntityKind::Track,
+            title: "Track 1".into(),
+            subtitle: "Artist 1".into(),
+            metadata: String::new(),
+            uri: Some("spotify:track:1".into()),
+            external_url: None,
+            artwork_url: None,
+            artists: vec![("Artist 1".into(), Some("spotify:artist:1".into()))],
+            album: Some(("Album 1".into(), "spotify:album:1".into())),
+            duration_ms: Some(180_000),
+            available: true,
+            saved: Some(true),
+            context: None,
+            restricted: false,
+        };
+
+        // Liked track in home route
+        let actions = actions_for(&track, &Route::Home, &state);
+        assert!(actions.contains(&ContextAction::Unlike));
+        assert!(!actions.contains(&ContextAction::Like));
+        assert!(actions.contains(&ContextAction::Play));
+        assert!(actions.contains(&ContextAction::AddToQueue));
+        assert!(actions.contains(&ContextAction::AddToPlaylist));
+        assert!(actions.contains(&ContextAction::GoToAlbum));
+        assert!(actions.contains(&ContextAction::GoToArtist));
+        assert!(!actions.contains(&ContextAction::RemoveFromPlaylist));
+
+        // Track in Route::Playlist
+        let actions_in_playlist = actions_for(
+            &track,
+            &Route::Playlist { uri: "spotify:playlist:1".into(), title: "Mix".into() },
+            &state,
+        );
+        assert!(actions_in_playlist.contains(&ContextAction::RemoveFromPlaylist));
+    }
+
+    #[test]
+    fn actions_for_albums_artists_and_playlists() {
+        let state = AppState::default();
+        let album = BrowseItem {
+            id: "a1".into(),
+            kind: EntityKind::Album,
+            title: "Album 1".into(),
+            subtitle: "Artist 1".into(),
+            metadata: String::new(),
+            uri: Some("spotify:album:1".into()),
+            external_url: None,
+            artwork_url: None,
+            artists: vec![("Artist 1".into(), Some("spotify:artist:1".into()))],
+            album: None,
+            duration_ms: None,
+            available: true,
+            saved: Some(false),
+            context: None,
+            restricted: false,
+        };
+        let album_actions = actions_for(&album, &Route::Home, &state);
+        assert!(album_actions.contains(&ContextAction::Play));
+        assert!(album_actions.contains(&ContextAction::ShuffleContext));
+        assert!(album_actions.contains(&ContextAction::SaveAlbum));
+        assert!(!album_actions.contains(&ContextAction::RemoveSavedAlbum));
+        assert!(album_actions.contains(&ContextAction::GoToArtist));
+
+        let artist = BrowseItem {
+            id: "ar1".into(),
+            kind: EntityKind::Artist,
+            title: "Artist 1".into(),
+            subtitle: String::new(),
+            metadata: String::new(),
+            uri: Some("spotify:artist:1".into()),
+            external_url: None,
+            artwork_url: None,
+            artists: Vec::new(),
+            album: None,
+            duration_ms: None,
+            available: true,
+            saved: Some(true),
+            context: None,
+            restricted: false,
+        };
+        let artist_actions = actions_for(&artist, &Route::Home, &state);
+        assert!(artist_actions.contains(&ContextAction::Play));
+        assert!(artist_actions.contains(&ContextAction::UnfollowArtist));
+        assert!(!artist_actions.contains(&ContextAction::FollowArtist));
+
+        let playlist = BrowseItem {
+            id: "p1".into(),
+            kind: EntityKind::Playlist,
+            title: "My Playlist".into(),
+            subtitle: String::new(),
+            metadata: String::new(),
+            uri: Some("spotify:playlist:1".into()),
+            external_url: None,
+            artwork_url: None,
+            artists: Vec::new(),
+            album: None,
+            duration_ms: None,
+            available: true,
+            saved: None,
+            context: None,
+            restricted: false,
+        };
+        let playlist_actions = actions_for(&playlist, &Route::Home, &state);
+        assert!(playlist_actions.contains(&ContextAction::Play));
+        assert!(playlist_actions.contains(&ContextAction::ShuffleContext));
+        assert!(playlist_actions.contains(&ContextAction::RenamePlaylist));
+        assert!(!playlist_actions.contains(&ContextAction::DeletePlaylist));
+
+        let playlist_actions_in_library = actions_for(&playlist, &Route::Library, &state);
+        assert!(playlist_actions_in_library.contains(&ContextAction::DeletePlaylist));
     }
 }

@@ -1,9 +1,9 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
 use crate::{
-    AlbumId, AlbumSummary, AppError, Cached, Device, DeviceId, Page, PlayRequest, Playlist,
-    PlaylistId, PlaylistSummary, Queue, RepeatMode, Result, SearchResults, SpotifyUri, Track,
-    TrackId,
+    AlbumId, AlbumSummary, AppError, ArtistId, Cached, Device, DeviceId, Page, PlayRequest,
+    Playlist, PlaylistId, PlaylistSummary, Queue, RepeatMode, Result, SearchResults, SpotifyUri,
+    Track, TrackId,
 };
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -66,6 +66,16 @@ pub trait LibraryService: Send + Sync {
     fn save(&self, uris: Vec<SpotifyUri>) -> BoxFuture<'_, Result<()>>;
     fn remove(&self, uris: Vec<SpotifyUri>) -> BoxFuture<'_, Result<()>>;
     fn contains(&self, uris: Vec<SpotifyUri>) -> BoxFuture<'_, Result<Vec<bool>>>;
+    fn follow_artists(&self, _ids: Vec<ArtistId>) -> BoxFuture<'_, Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn unfollow_artists(&self, _ids: Vec<ArtistId>) -> BoxFuture<'_, Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn is_following_artists(&self, ids: Vec<ArtistId>) -> BoxFuture<'_, Result<Vec<bool>>> {
+        let count = ids.len();
+        Box::pin(std::future::ready(Ok(vec![false; count])))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
