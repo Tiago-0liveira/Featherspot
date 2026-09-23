@@ -6,6 +6,13 @@
   let player = null;
   let connectRequested = false;
   let nextEventId = 1;
+  let connecting = false;
+  let connected = false;
+
+  function resetConnectionState() {
+    connecting = false;
+    connected = false;
+  }
 
   function emit(payload) {
     // Wry only accepts string web messages; posting an object is silently dropped.
@@ -37,10 +44,16 @@
     });
 
     player.addListener("ready", ({ device_id: deviceId }) => {
+      connecting = false;
+      connected = true;
       emit({ type: "ready", device_id: deviceId });
     });
-    player.addListener("not_ready", () => emit({ type: "unavailable", reason: "not_ready" }));
+    player.addListener("not_ready", () => {
+      resetConnectionState();
+      emit({ type: "unavailable", reason: "not_ready" });
+    });
     player.addListener("initialization_error", ({ message }) => {
+      resetConnectionState();
       emit({ type: "unavailable", reason: cleanMessage(message) });
     });
     player.addListener("autoplay_failed", () => {
@@ -90,12 +103,30 @@
           accessToken = typeof payload.access_token === "string" ? payload.access_token : null;
           break;
         case "connect":
+          if (connecting || connected) {
+            return;
+          }
+          connecting = true;
           connectRequested = true;
           await initialize();
-          if (player) await player.connect();
+          if (player) {
+            try {
+              const success = await player.connect();
+              if (!success) {
+                resetConnectionState();
+              }
+            } catch (err) {
+              resetConnectionState();
+              throw err;
+            }
+          }
           break;
         case "disconnect":
-          requirePlayer().disconnect();
+          connectRequested = false;
+          resetConnectionState();
+          if (player) {
+            player.disconnect();
+          }
           break;
         case "play":
           await requirePlayer().resume();
@@ -110,7 +141,11 @@
           await requirePlayer().setVolume(Math.min(1, Math.max(0, Number(payload.value_milli) / 1000)));
           break;
         case "shutdown":
-          if (player) player.disconnect();
+          connectRequested = false;
+          resetConnectionState();
+          if (player) {
+            player.disconnect();
+          }
           player = null;
           accessToken = null;
           break;
@@ -124,7 +159,18 @@
 
   window.onSpotifyWebPlaybackSDKReady = async () => {
     await initialize();
-    if (connectRequested && player) await player.connect();
+    if (connectRequested && !connected && player) {
+      connecting = true;
+      try {
+        const success = await player.connect();
+        if (!success) {
+          resetConnectionState();
+        }
+      } catch (err) {
+        resetConnectionState();
+        emit({ type: "playback_error", message: cleanMessage(err?.message) });
+      }
+    }
   };
   window.addEventListener("message", (event) => {
     if (event.source === window) command(event.data);
