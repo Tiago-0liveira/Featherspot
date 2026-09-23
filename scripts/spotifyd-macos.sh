@@ -9,7 +9,7 @@ ensure_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
         cat <<'EOF' > "$CONFIG_FILE"
 [global]
-device_name = "Mellowdeck"
+device_name = "lspotify"
 device_type = "computer"
 backend = "portaudio"
 volume_controller = "softvol"
@@ -49,7 +49,7 @@ case "$cmd" in
         if pgrep -x spotifyd >/dev/null; then
             pid=$(pgrep -x spotifyd | head -n 1)
             echo "spotifyd is RUNNING (PID: $pid)"
-            echo "Device name: Mellowdeck (CoreAudio / portaudio backend)"
+            echo "Device name: lspotify (CoreAudio / portaudio backend)"
             echo "Config: $CONFIG_FILE"
         else
             echo "spotifyd is NOT running."

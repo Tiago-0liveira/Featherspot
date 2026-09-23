@@ -2,14 +2,14 @@
 
 ## Visual direction
 
-Mellowdeck will use the reference's calm, editorial structure without copying its branding:
+lspotify will use the reference's calm, editorial structure without copying its branding:
 
 - a soft neutral canvas and rounded, floating surfaces;
 - a compact icon rail instead of a wide text-heavy sidebar;
 - a large featured card paired with a concise top-artists list;
 - artwork-led listening sections with generous spacing;
 - a detached player capsule spanning the lower content area;
-- Mellowdeck's peach, lavender, sage, cream, and ink tokens throughout.
+- lspotify's peach, lavender, sage, cream, and ink tokens throughout.
 
 The authenticated shell is implemented in stages. Placeholder artwork remains abstract until Spotify
 metadata and compliant artwork loading are connected.
@@ -44,7 +44,7 @@ and an optional direct-manipulation seek control.
 - Releasing, cancelling, losing the target device, or receiving a newer authoritative player state
   ends the gesture and reconciles the displayed position.
 - A short locally synthesized scratch cue can follow drag velocity. It is an interaction sound only:
-  Mellowdeck does not sample, record, mix, or alter Spotify audio. Interaction sounds have their own
+  lspotify does not sample, record, mix, or alter Spotify audio. Interaction sounds have their own
   mute setting and stop immediately when the gesture ends.
 - A conventional seek slider, keyboard seek commands, and accessible elapsed/remaining labels remain
   available. Reduced-motion mode stops idle rotation, and the vinyl never becomes the only way to seek.

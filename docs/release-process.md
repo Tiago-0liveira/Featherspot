@@ -6,13 +6,13 @@ the Windows release. Release jobs wait for earlier main CI runs, then build the 
 passed Windows CI.
 
 The workflow chooses a version above the highest `vMAJOR.MINOR.PATCH` tag, starting above `0.1.0`.
-It builds `mellowdeck-cli.exe` and `mellowdeck-player-host.exe` together and publishes a per-user
+It builds `lspotify.exe` and `lspotify-player-host.exe` together and publishes a per-user
 MSI, portable ZIP, `install.ps1`, `install.cmd`, SHA-256 checksums, and separate CycloneDX SBOMs
 for both executables. Published releases are public and marked unsigned. A retry of an already
 published commit does not produce another release.
 
 The MSI owns both executables and the user PATH entry. Its upgrade identity and install path stay
-stable across versions, while settings, cache, and logs remain in `%LOCALAPPDATA%\Mellowdeck`.
+stable across versions, while settings, cache, and logs remain in `%LOCALAPPDATA%\lspotify`.
 Running either install script again installs the latest MSI. A future in-app updater can use the
 same release asset after the CLI exits.
 

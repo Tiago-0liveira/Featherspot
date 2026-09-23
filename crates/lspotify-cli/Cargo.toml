@@ -1,0 +1,32 @@
+[package]
+name = "lspotify-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "lspotify"
+
+[[bin]]
+name = "lspotify"
+path = "src/bin/lspotify.rs"
+
+[dependencies]
+crossterm.workspace = true
+lspotify-core = { path = "../lspotify-core" }
+lspotify-platform = { path = "../lspotify-platform" }
+lspotify-spotify = { path = "../lspotify-spotify" }
+lspotify-storage = { path = "../lspotify-storage" }
+ratatui.workspace = true
+ratatui-image.workspace = true
+image.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

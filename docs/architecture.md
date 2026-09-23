@@ -1,16 +1,16 @@
 # Architecture
 
-The executable is the composition root. `mellowdeck-core` owns domain models, validated IDs,
+The executable is the composition root. `lspotify-core` owns domain models, validated IDs,
 state, actions, errors, and object-safe asynchronous ports. Every other crate is an adapter that
-depends inward on core. Core must not depend on GPUI, Wry, HTTP, SQLite, or OS APIs.
+depends inward on core. Core must not depend on Ratatui, Wry, HTTP, SQLite, or OS APIs.
 
 ```text
-mellowdeck
- ├── mellowdeck-ui ─────────→ mellowdeck-core
- ├── mellowdeck-spotify ────→ mellowdeck-core
- ├── mellowdeck-playback ───→ mellowdeck-core
- ├── mellowdeck-storage ────→ mellowdeck-core
- └── mellowdeck-platform ───→ mellowdeck-core
+lspotify
+ ├── lspotify-cli ─────────→ lspotify-core
+ ├── lspotify-spotify ────→ lspotify-core
+ ├── lspotify-playback ───→ lspotify-core
+ ├── lspotify-storage ────→ lspotify-core
+ └── lspotify-platform ───→ lspotify-core
 ```
 
 State changes pass through named `Action` values and `AppState::reduce`. UI entities should
@@ -22,4 +22,3 @@ The reconciler interpolates progress only while playing and clamps it to the kno
 
 Platform code is selected behind `cfg(target_os)` and stable core traits. Any necessary `unsafe`
 must be isolated in a platform-specific module with a documented safety invariant.
-

@@ -3819,6 +3819,96 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "lspotify-cli"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "image",
+ "lspotify-core",
+ "lspotify-platform",
+ "lspotify-spotify",
+ "lspotify-storage",
+ "ratatui",
+ "ratatui-image",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.16",
+ "tracing",
+]
+
+[[package]]
+name = "lspotify-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.16",
+]
+
+[[package]]
+name = "lspotify-platform"
+version = "0.1.0"
+dependencies = [
+ "keyring",
+ "lspotify-core",
+ "lspotify-playback",
+ "open",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "wry",
+]
+
+[[package]]
+name = "lspotify-playback"
+version = "0.1.0"
+dependencies = [
+ "lspotify-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lspotify-player-host"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "lspotify-core",
+ "lspotify-platform",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lspotify-spotify"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "lspotify-core",
+ "rand 0.9.2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "url",
+]
+
+[[package]]
+name = "lspotify-storage"
+version = "0.1.0"
+dependencies = [
+ "lspotify-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "lyon"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3914,95 +4004,6 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest 0.10.7",
-]
-
-[[package]]
-name = "mellowdeck-cli"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "image",
- "mellowdeck-core",
- "mellowdeck-platform",
- "mellowdeck-spotify",
- "mellowdeck-storage",
- "ratatui",
- "ratatui-image",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.16",
- "tracing",
-]
-
-[[package]]
-name = "mellowdeck-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror 2.0.16",
-]
-
-[[package]]
-name = "mellowdeck-platform"
-version = "0.1.0"
-dependencies = [
- "keyring",
- "mellowdeck-core",
- "mellowdeck-playback",
- "open",
- "serde_json",
- "tracing",
- "wry",
-]
-
-[[package]]
-name = "mellowdeck-playback"
-version = "0.1.0"
-dependencies = [
- "mellowdeck-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "mellowdeck-player-host"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "mellowdeck-core",
- "mellowdeck-platform",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "mellowdeck-spotify"
-version = "0.1.0"
-dependencies = [
- "base64",
- "mellowdeck-core",
- "rand 0.9.2",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "url",
-]
-
-[[package]]
-name = "mellowdeck-storage"
-version = "0.1.0"
-dependencies = [
- "mellowdeck-core",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
 ]
 
 [[package]]

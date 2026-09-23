@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>Mellowdeck</string>
+  <string>lspotify</string>
   <key>CFBundleExecutable</key>
-  <string>mellowdeck</string>
+  <string>lspotify</string>
   <key>CFBundleIdentifier</key>
-  <string>com.mellowdeck.desktop</string>
+  <string>com.lspotify.desktop</string>
   <key>CFBundleName</key>
-  <string>Mellowdeck</string>
+  <string>lspotify</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

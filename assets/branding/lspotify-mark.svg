@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">lspotify mark</title>
+  <desc id="desc">Three layered rounded cards forming an abstract letter M</desc>
+  <rect width="256" height="256" rx="52" fill="#0d1320"/>
+  <rect x="43" y="55" width="74" height="150" rx="24" fill="#f4b89f" transform="rotate(-9 80 130)"/>
+  <rect x="91" y="45" width="74" height="160" rx="24" fill="#c7b8ea"/>
+  <rect x="139" y="55" width="74" height="150" rx="24" fill="#aecbb3" transform="rotate(9 176 130)"/>
+  <path d="M73 165V95l55 49 55-49v70" fill="none" stroke="#202331" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+

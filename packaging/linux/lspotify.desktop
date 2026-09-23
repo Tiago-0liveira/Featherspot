@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=lspotify
+Comment=Spotify terminal client
+Exec=lspotify
+Icon=lspotify
+Terminal=true
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
