@@ -10,8 +10,8 @@ pub use callback::CallbackServer;
 pub use home::{
     SpotifyArtistDetail, SpotifyBrowseItem, SpotifyContentState, SpotifyDetailKind,
     SpotifyDetailPage, SpotifyDevice, SpotifyDisplayItem, SpotifyEntityKind, SpotifyHome,
-    SpotifyLibrary, SpotifyPage, SpotifyPlayback, SpotifyQueue, SpotifySearchItem, SpotifySection,
-    SpotifyTypedQueue, SpotifyWebApi,
+    SpotifyLibrary, SpotifyLibraryService, SpotifyPage, SpotifyPlayback, SpotifyQueue,
+    SpotifySearchItem, SpotifySection, SpotifyTypedQueue, SpotifyWebApi,
 };
 pub use oauth::{
     AUTHORIZE_URL, CALLBACK_HOST, CALLBACK_PORT, CALLBACK_URL, OAuthAttempt, REQUIRED_SCOPES,

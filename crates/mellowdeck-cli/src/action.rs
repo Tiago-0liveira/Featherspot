@@ -4,12 +4,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 
 use crate::state::{
-    AppState, EntityKind, FocusRegion, LibraryTab, Notice, NoticeKind, Overlay, Route, SearchFilter,
+    AppState, BrowseItem, ContextAction, EntityKind, FocusRegion, LibraryTab, Notice, NoticeKind,
+    Overlay, Route, SearchFilter, actions_for,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Effect {
-    LoadPage { route: Route, generation: u64, offset: u32, query: String },
+    LoadPage { route: Route, generation: u64, offset: u32, query: String, tab: Option<LibraryTab> },
     RefreshPlayback,
     RefreshQueue,
     TogglePlayback,
@@ -25,6 +26,11 @@ pub enum Effect {
     Transfer(String),
     OpenExternal(String),
     SaveSettings,
+    SetSaved { uri: String, saved: bool },
+    AddToPlaylist { playlist_id: String, track_uri: String },
+    RemoveFromPlaylist { playlist_uri: String, track_uri: String },
+    RenamePlaylist { playlist_id: String, new_name: String },
+    LoadPlaylistsForPicker { pending_uri: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +46,7 @@ pub enum Action {
     LocalRight,
     Activate,
     OpenActions,
+    ToggleSaved,
     Inspect,
     ToggleHelp,
     StartSearch,
@@ -74,6 +81,7 @@ pub enum HitTarget {
     ContentRow(usize),
     QueueRow(usize),
     ActionRow(usize),
+    PlaylistPickerRow(usize),
     PlayerToggle,
     PlayerPrevious,
     PlayerNext,
@@ -133,7 +141,11 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             && key.modifiers.contains(KeyModifiers::CONTROL))
     {
         Action::Quit
-    } else if state.text_entry || matches!(state.overlay, Some(Overlay::Help { editing: true, .. }))
+    } else if state.text_entry
+        || matches!(
+            state.overlay,
+            Some(Overlay::Help { editing: true, .. } | Overlay::RenamePlaylist { .. })
+        )
     {
         match key.code {
             KeyCode::Esc => Action::Cancel,
@@ -208,11 +220,10 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             KeyCode::Char('r') => Action::Repeat,
             KeyCode::Char('d') => Action::Navigate(Route::Devices),
             KeyCode::Char('a') => Action::Enqueue,
+            KeyCode::Char('l') => Action::ToggleSaved,
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('i') => Action::Inspect,
-            KeyCode::Char('m') if state.layout == crate::state::LayoutMode::Compact => {
-                Action::OpenActions
-            }
+            KeyCode::Char('m') => Action::OpenActions,
             _ => return Vec::new(),
         }
     };
@@ -355,7 +366,12 @@ fn select_target(state: &mut AppState, target: Option<&HitTarget>) {
             state.queue.selected = *index;
         }
         Some(HitTarget::ActionRow(index)) => {
-            if let Some(Overlay::Actions { selected }) = &mut state.overlay {
+            if let Some(Overlay::Actions { selected, .. }) = &mut state.overlay {
+                *selected = *index;
+            }
+        }
+        Some(HitTarget::PlaylistPickerRow(index)) => {
+            if let Some(Overlay::PlaylistPicker { selected, .. }) = &mut state.overlay {
                 *selected = *index;
             }
         }
@@ -377,8 +393,14 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
         }
         Action::Move(delta) => {
             match &mut state.overlay {
-                Some(Overlay::Actions { selected }) => {
-                    *selected = selected.saturating_add_signed(delta).min(5);
+                Some(Overlay::Actions { selected, actions }) => {
+                    *selected =
+                        selected.saturating_add_signed(delta).min(actions.len().saturating_sub(1));
+                }
+                Some(Overlay::PlaylistPicker { selected, playlists, .. }) => {
+                    *selected = selected
+                        .saturating_add_signed(delta)
+                        .min(playlists.len().saturating_sub(1));
                 }
                 Some(Overlay::Menu) => state.sidebar.move_by(delta, AppState::NAVIGATION.len(), 6),
                 _ => move_selection(state, delta),
@@ -398,33 +420,33 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
             move_to_edge(state, true);
             Vec::new()
         }
-        Action::LocalLeft => {
-            cycle_local(state, false);
-            Vec::new()
-        }
-        Action::LocalRight => {
-            cycle_local(state, true);
-            Vec::new()
-        }
+        Action::LocalLeft => cycle_local(state, false),
+        Action::LocalRight => cycle_local(state, true),
         Action::Activate => {
-            if let Some(Overlay::Actions { selected }) = state.overlay.clone() {
-                activate_action_menu(state, selected)
+            if let Some(Overlay::Actions { selected, actions }) = state.overlay.clone() {
+                activate_action_menu(state, selected, &actions)
+            } else if let Some(Overlay::PlaylistPicker { selected, playlists, pending_uri }) =
+                state.overlay.clone()
+            {
+                activate_playlist_picker(state, selected, &playlists, &pending_uri)
             } else {
                 activate(state)
             }
         }
         Action::OpenActions => {
-            state.overlay = Some(
-                if state.layout == crate::state::LayoutMode::Compact
-                    && state.focus != FocusRegion::Content
-                {
-                    Overlay::Menu
-                } else {
-                    Overlay::Actions { selected: 0 }
-                },
-            );
+            if state.layout == crate::state::LayoutMode::Compact
+                && state.focus != FocusRegion::Content
+            {
+                state.overlay = Some(Overlay::Menu);
+            } else if let Some(item) = state.selected_item() {
+                let actions = actions_for(item, &state.page.route, state);
+                if !actions.is_empty() {
+                    state.overlay = Some(Overlay::Actions { selected: 0, actions });
+                }
+            }
             Vec::new()
         }
+        Action::ToggleSaved => toggle_saved(state),
         Action::Inspect => {
             if state.selected_item().is_some() {
                 state.overlay = Some(Overlay::Inspector);
@@ -539,6 +561,11 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
             generation: state.generation,
             offset: 0,
             query: state.search_query.clone(),
+            tab: if state.page.route == Route::Library {
+                Some(state.page.library_tab)
+            } else {
+                None
+            },
         }],
         Action::PlayDetailContext => detail_context_uri(state).map_or_else(Vec::new, |uri| {
             vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
@@ -588,9 +615,17 @@ fn detail_external_url(state: &AppState) -> Option<String> {
 fn load_route(state: &mut AppState, route: Route) -> Vec<Effect> {
     let is_search = route == Route::Search;
     let is_search_empty = is_search && state.search_query.trim().is_empty();
+    let cache_key = match route {
+        Route::Library => match state.library_tab {
+            LibraryTab::LikedSongs => "library:liked".to_string(),
+            LibraryTab::Albums => "library:albums".to_string(),
+            LibraryTab::Playlists => "library:playlists".to_string(),
+        },
+        _ => route.key(),
+    };
     let is_fresh = state
         .page_cache
-        .get(&route.key())
+        .get(&cache_key)
         .is_some_and(|(_, cached_at)| cached_at.elapsed() < Duration::from_secs(60));
 
     let generation = state.navigate(route.clone());
@@ -607,7 +642,14 @@ fn load_route(state: &mut AppState, route: Route) -> Vec<Effect> {
         return Vec::new();
     }
 
-    vec![Effect::LoadPage { route, generation, offset: 0, query: state.search_query.clone() }]
+    let is_library = route == Route::Library;
+    vec![Effect::LoadPage {
+        route,
+        generation,
+        offset: 0,
+        query: state.search_query.clone(),
+        tab: if is_library { Some(state.library_tab) } else { None },
+    }]
 }
 
 fn move_selection(state: &mut AppState, delta: isize) {
@@ -635,15 +677,46 @@ fn move_to_edge(state: &mut AppState, end: bool) {
     cursor.move_to(if end { len.saturating_sub(1) } else { 0 }, len, height);
 }
 
-fn cycle_local(state: &mut AppState, right: bool) {
+fn cycle_local(state: &mut AppState, right: bool) -> Vec<Effect> {
     match state.page.route {
         Route::Library => {
-            state.page.library_tab = match (state.page.library_tab, right) {
-                (LibraryTab::Albums, true) | (LibraryTab::Playlists, false) => {
-                    LibraryTab::Playlists
-                }
-                _ => LibraryTab::Albums,
+            let tabs = LibraryTab::ALL;
+            let current = tabs.iter().position(|t| *t == state.page.library_tab).unwrap_or(0);
+            let next = if right {
+                (current + 1) % tabs.len()
+            } else {
+                current.checked_sub(1).unwrap_or(tabs.len() - 1)
+            };
+            let new_tab = tabs[next];
+            state.page.library_tab = new_tab;
+            state.library_tab = new_tab;
+            state.page.cursor = crate::state::ListCursor::default();
+
+            let cache_key = match new_tab {
+                LibraryTab::LikedSongs => "library:liked",
+                LibraryTab::Albums => "library:albums",
+                LibraryTab::Playlists => "library:playlists",
+            };
+
+            if let Some((cached_page, cached_at)) = state.page_cache.get(cache_key)
+                && cached_at.elapsed() < Duration::from_secs(60)
+            {
+                state.page = cached_page.clone();
+                state.page.library_tab = new_tab;
+                return Vec::new();
             }
+
+            state.generation = state.generation.saturating_add(1);
+            state.page.generation = state.generation;
+            state.page.sections = Vec::new();
+            state.page.state = crate::state::LoadState::Loading;
+            vec![Effect::LoadPage {
+                route: Route::Library,
+                generation: state.generation,
+                offset: 0,
+                query: String::new(),
+                tab: Some(new_tab),
+            }]
         }
         Route::Search => {
             let current = SearchFilter::ALL
@@ -656,10 +729,11 @@ fn cycle_local(state: &mut AppState, right: bool) {
                 current.checked_sub(1).unwrap_or(SearchFilter::ALL.len() - 1)
             };
             state.page.search_filter = SearchFilter::ALL[index];
+            state.page.cursor = crate::state::ListCursor::default();
+            Vec::new()
         }
-        _ => {}
+        _ => Vec::new(),
     }
-    state.page.cursor = crate::state::ListCursor::default();
 }
 
 fn activate(state: &mut AppState) -> Vec<Effect> {
@@ -743,6 +817,7 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
                     generation: state.generation,
                     offset: 0,
                     query,
+                    tab: None,
                 },
                 Effect::SaveSettings,
             ]
@@ -758,27 +833,323 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
     }
 }
 
-fn activate_action_menu(state: &mut AppState, selected: usize) -> Vec<Effect> {
+fn toggle_saved(state: &mut AppState) -> Vec<Effect> {
+    let Some(item) = state.selected_item().cloned() else {
+        return Vec::new();
+    };
+    if item.kind != EntityKind::Track {
+        return Vec::new();
+    }
+    let Some(uri) = item.uri.clone() else {
+        return Vec::new();
+    };
+    let new_saved = match item.saved {
+        Some(true) => false,
+        Some(false) | None => true,
+    };
+
+    if new_saved {
+        state.notice =
+            Some(Notice { kind: NoticeKind::Success, text: "♥ Added to Liked Songs".into() });
+    } else {
+        state.notice =
+            Some(Notice { kind: NoticeKind::Success, text: "♡ Removed from Liked Songs".into() });
+    }
+
+    state.page_cache.remove("library:liked");
+
+    if state.page.route == Route::Library
+        && state.page.library_tab == LibraryTab::LikedSongs
+        && !new_saved
+    {
+        for section in &mut state.page.sections {
+            section.items.retain(|i| i.uri.as_deref() != Some(&uri));
+        }
+        let len = state.page.flattened().len();
+        if len == 0 {
+            state.page.cursor.selected = 0;
+            state.page.cursor.offset = 0;
+        } else if state.page.cursor.selected >= len {
+            state.page.cursor.selected = len - 1;
+        }
+    } else {
+        for section in &mut state.page.sections {
+            for track in &mut section.items {
+                if track.uri.as_deref() == Some(&uri) {
+                    track.saved = Some(new_saved);
+                }
+            }
+        }
+    }
+
+    for track in &mut state.queue_upcoming {
+        if track.uri.as_deref() == Some(&uri) {
+            track.saved = Some(new_saved);
+        }
+    }
+    if let Some(now) = &mut state.queue_now
+        && now.uri.as_deref() == Some(&uri)
+    {
+        now.saved = Some(new_saved);
+    }
+
+    vec![Effect::SetSaved { uri, saved: new_saved }]
+}
+
+fn playlist_id_from_uri(uri: &str) -> String {
+    if let Some(id) = uri.strip_prefix("spotify:playlist:") {
+        id.to_string()
+    } else {
+        uri.to_string()
+    }
+}
+
+fn activate_playlist_picker(
+    state: &mut AppState,
+    selected: usize,
+    playlists: &[BrowseItem],
+    pending_uri: &str,
+) -> Vec<Effect> {
+    let Some(playlist) = playlists.get(selected) else {
+        return Vec::new();
+    };
+    let playlist_id =
+        playlist.uri.as_deref().map_or_else(|| playlist.id.clone(), playlist_id_from_uri);
+    let track_uri = pending_uri.to_string();
+    let title = playlist.title.clone();
+    state.overlay = None;
+    state.notice =
+        Some(Notice { kind: NoticeKind::Pending, text: format!("Adding track to {title}…") });
+    vec![Effect::AddToPlaylist { playlist_id, track_uri }]
+}
+
+#[allow(clippy::too_many_lines)]
+fn activate_action_menu(
+    state: &mut AppState,
+    selected: usize,
+    actions: &[ContextAction],
+) -> Vec<Effect> {
+    let Some(action) = actions.get(selected).copied() else {
+        state.overlay = None;
+        return Vec::new();
+    };
     let item = state.selected_item().cloned();
     state.overlay = None;
     let Some(item) = item else {
         return Vec::new();
     };
-    match selected {
-        0 => activate(state),
-        1 => enqueue_selected(state),
-        2 => item
+
+    match action {
+        ContextAction::Play => activate(state),
+        ContextAction::PlayNext => {
+            if let Some(uri) = item.uri.clone() {
+                state.queue_upcoming.insert(0, item.clone());
+                state.notice = Some(Notice {
+                    kind: NoticeKind::Pending,
+                    text: format!("Playing {} next", item.title),
+                });
+                vec![Effect::Enqueue(uri)]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::AddToQueue => enqueue_selected(state),
+        ContextAction::Like => {
+            if item.saved == Some(true) {
+                Vec::new()
+            } else {
+                toggle_saved(state)
+            }
+        }
+        ContextAction::Unlike => {
+            if item.saved == Some(false) {
+                Vec::new()
+            } else {
+                toggle_saved(state)
+            }
+        }
+        ContextAction::AddToPlaylist => {
+            if let Some(uri) = item.uri.clone() {
+                state.overlay = Some(Overlay::PlaylistPicker {
+                    selected: 0,
+                    playlists: Vec::new(),
+                    pending_uri: uri.clone(),
+                });
+                vec![Effect::LoadPlaylistsForPicker { pending_uri: uri }]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::RemoveFromPlaylist => {
+            let playlist_uri = state.page.uri.clone().unwrap_or_else(|| match &state.page.route {
+                Route::Playlist { uri, .. } => uri.clone(),
+                _ => String::new(),
+            });
+            if let Some(track_uri) = item.uri.clone() {
+                for section in &mut state.page.sections {
+                    section.items.retain(|i| i.uri.as_deref() != Some(&track_uri));
+                }
+                let len = state.page.flattened().len();
+                if len == 0 {
+                    state.page.cursor.selected = 0;
+                    state.page.cursor.offset = 0;
+                } else if state.page.cursor.selected >= len {
+                    state.page.cursor.selected = len - 1;
+                }
+                state.notice = Some(Notice {
+                    kind: NoticeKind::Pending,
+                    text: format!("Removing {} from playlist…", item.title),
+                });
+                vec![Effect::RemoveFromPlaylist { playlist_uri, track_uri }]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::SaveAlbum => {
+            if let Some(uri) = item.uri.clone() {
+                state.notice = Some(Notice {
+                    kind: NoticeKind::Success,
+                    text: "Saved album to library".into(),
+                });
+                state.page_cache.remove("library:albums");
+                for section in &mut state.page.sections {
+                    for album in &mut section.items {
+                        if album.uri.as_deref() == Some(&uri) {
+                            album.saved = Some(true);
+                        }
+                    }
+                }
+                vec![Effect::SetSaved { uri, saved: true }]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::RemoveSavedAlbum => {
+            if let Some(uri) = item.uri.clone() {
+                state.notice = Some(Notice {
+                    kind: NoticeKind::Success,
+                    text: "Removed album from library".into(),
+                });
+                state.page_cache.remove("library:albums");
+                if state.page.route == Route::Library
+                    && state.page.library_tab == LibraryTab::Albums
+                {
+                    for section in &mut state.page.sections {
+                        section.items.retain(|i| i.uri.as_deref() != Some(&uri));
+                    }
+                    let len = state.page.flattened().len();
+                    if len == 0 {
+                        state.page.cursor.selected = 0;
+                        state.page.cursor.offset = 0;
+                    } else if state.page.cursor.selected >= len {
+                        state.page.cursor.selected = len - 1;
+                    }
+                } else {
+                    for section in &mut state.page.sections {
+                        for album in &mut section.items {
+                            if album.uri.as_deref() == Some(&uri) {
+                                album.saved = Some(false);
+                            }
+                        }
+                    }
+                }
+                vec![Effect::SetSaved { uri, saved: false }]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::FollowArtist => {
+            if let Some(uri) = item.uri.clone() {
+                state.notice =
+                    Some(Notice { kind: NoticeKind::Success, text: "Following artist".into() });
+                for section in &mut state.page.sections {
+                    for artist in &mut section.items {
+                        if artist.uri.as_deref() == Some(&uri) {
+                            artist.saved = Some(true);
+                        }
+                    }
+                }
+                vec![Effect::SetSaved { uri, saved: true }]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::UnfollowArtist => {
+            if let Some(uri) = item.uri.clone() {
+                state.notice =
+                    Some(Notice { kind: NoticeKind::Success, text: "Unfollowed artist".into() });
+                for section in &mut state.page.sections {
+                    for artist in &mut section.items {
+                        if artist.uri.as_deref() == Some(&uri) {
+                            artist.saved = Some(false);
+                        }
+                    }
+                }
+                vec![Effect::SetSaved { uri, saved: false }]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::PlayContext => item.uri.map_or_else(Vec::new, |uri| {
+            vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
+        }),
+        ContextAction::ShuffleContext => item.uri.map_or_else(Vec::new, |uri| {
+            state.playback.shuffle = true;
+            vec![
+                Effect::PlayTrack { uri, device_id: state.target_device_id() },
+                Effect::Shuffle(true),
+            ]
+        }),
+        ContextAction::GoToAlbum => item
             .album
             .map_or_else(Vec::new, |(title, uri)| load_route(state, Route::Album { uri, title })),
-        3 => item
+        ContextAction::GoToArtist => item
             .artists
             .first()
             .and_then(|(title, uri)| uri.as_ref().map(|uri| (title.clone(), uri.clone())))
             .map_or_else(Vec::new, |(title, uri)| load_route(state, Route::Artist { uri, title })),
-        4 => item.external_url.map_or_else(Vec::new, |url| vec![Effect::OpenExternal(url)]),
-        _ => {
-            state.overlay = Some(Overlay::Inspector);
+        ContextAction::RenamePlaylist => {
+            let playlist_id =
+                item.uri.as_deref().map_or_else(|| item.id.clone(), playlist_id_from_uri);
+            state.overlay = Some(Overlay::RenamePlaylist { playlist_id, name: item.title.clone() });
+            state.text_entry = true;
             Vec::new()
+        }
+        ContextAction::DeletePlaylist => {
+            if let Some(uri) = item.uri.clone() {
+                state.notice = Some(Notice {
+                    kind: NoticeKind::Success,
+                    text: "Removed playlist from library".into(),
+                });
+                state.page_cache.remove("library:playlists");
+                if state.page.route == Route::Library
+                    && state.page.library_tab == LibraryTab::Playlists
+                {
+                    for section in &mut state.page.sections {
+                        section.items.retain(|i| i.uri.as_deref() != Some(&uri));
+                    }
+                    let len = state.page.flattened().len();
+                    if len == 0 {
+                        state.page.cursor.selected = 0;
+                        state.page.cursor.offset = 0;
+                    } else if state.page.cursor.selected >= len {
+                        state.page.cursor.selected = len - 1;
+                    }
+                }
+                vec![Effect::SetSaved { uri, saved: false }]
+            } else {
+                Vec::new()
+            }
+        }
+        ContextAction::OpenInSpotify => {
+            let url = item.external_url.clone().or_else(|| {
+                item.uri.as_ref().and_then(|uri| {
+                    uri.parse::<mellowdeck_core::ids::SpotifyUri>()
+                        .ok()
+                        .map(|parsed| parsed.web_url())
+                })
+            });
+            url.map_or_else(Vec::new, |url| vec![Effect::OpenExternal(url)])
         }
     }
 }
@@ -900,6 +1271,8 @@ fn enqueue_selected(state: &mut AppState) -> Vec<Effect> {
 fn insert_text(state: &mut AppState, ch: char) {
     if let Some(Overlay::Help { query, .. }) = &mut state.overlay {
         query.push(ch);
+    } else if let Some(Overlay::RenamePlaylist { name, .. }) = &mut state.overlay {
+        name.push(ch);
     } else if state.page.route == Route::Search {
         state.search_query.push(ch);
     } else {
@@ -910,6 +1283,8 @@ fn insert_text(state: &mut AppState, ch: char) {
 fn backspace(state: &mut AppState) {
     if let Some(Overlay::Help { query, .. }) = &mut state.overlay {
         query.pop();
+    } else if let Some(Overlay::RenamePlaylist { name, .. }) = &mut state.overlay {
+        name.pop();
     } else if state.page.route == Route::Search {
         state.search_query.pop();
     } else {
@@ -918,6 +1293,18 @@ fn backspace(state: &mut AppState) {
 }
 
 fn submit_text(state: &mut AppState) -> Vec<Effect> {
+    if let Some(Overlay::RenamePlaylist { playlist_id, name }) = state.overlay.take() {
+        state.text_entry = false;
+        let trimmed = name.trim().to_string();
+        if !trimmed.is_empty() {
+            state.notice = Some(Notice {
+                kind: NoticeKind::Pending,
+                text: format!("Renaming playlist to \"{trimmed}\"…"),
+            });
+            return vec![Effect::RenamePlaylist { playlist_id, new_name: trimmed }];
+        }
+        return Vec::new();
+    }
     if matches!(state.overlay, Some(Overlay::Help { .. })) {
         state.text_entry = false;
         return Vec::new();
@@ -943,6 +1330,7 @@ fn submit_text(state: &mut AppState) -> Vec<Effect> {
                 generation: state.generation,
                 offset: 0,
                 query: state.search_query.clone(),
+                tab: None,
             },
             Effect::SaveSettings,
         ]
@@ -1181,6 +1569,7 @@ mod tests {
             album: Some(("Album".into(), "spotify:album:a".into())),
             duration_ms: Some(180_000),
             available: true,
+            saved: None,
             context: position
                 .map(|position| ContextPosition { uri: "spotify:playlist:mix".into(), position }),
             restricted: false,
@@ -1591,6 +1980,7 @@ mod tests {
                     album: None,
                     duration_ms: None,
                     available: true,
+                    saved: None,
                     context: None,
                     restricted: false,
                 },
@@ -1607,6 +1997,7 @@ mod tests {
                     album: None,
                     duration_ms: None,
                     available: true,
+                    saved: None,
                     context: None,
                     restricted: false,
                 },
@@ -1623,6 +2014,7 @@ mod tests {
                     album: None,
                     duration_ms: None,
                     available: true,
+                    saved: None,
                     context: None,
                     restricted: false,
                 },
@@ -1639,6 +2031,7 @@ mod tests {
                     album: None,
                     duration_ms: None,
                     available: true,
+                    saved: None,
                     context: None,
                     restricted: false,
                 },
@@ -1691,6 +2084,7 @@ mod tests {
                 album: None,
                 duration_ms: None,
                 available: true,
+                saved: None,
                 context: None,
                 restricted: false,
             }],
@@ -1710,5 +2104,216 @@ mod tests {
         load_route(&mut state, Route::Settings);
         assert_eq!(state.page.route, Route::Settings);
         assert_eq!(state.page.sections[0].items[0].title, "Side player max height: 30 rows");
+    }
+
+    #[test]
+    fn toggle_saved_toggles_and_emits_effect() {
+        let mut state = AppState::default();
+        state.page.route = Route::Album { uri: "spotify:album:1".into(), title: "Album".into() };
+        state.page.state = LoadState::Ready;
+        state.page.sections = vec![Section {
+            title: "Tracks".into(),
+            items: vec![BrowseItem {
+                id: "t1".into(),
+                kind: EntityKind::Track,
+                title: "Song 1".into(),
+                subtitle: "Artist 1".into(),
+                metadata: String::new(),
+                uri: Some("spotify:track:1".into()),
+                external_url: None,
+                artwork_url: None,
+                artists: Vec::new(),
+                album: None,
+                duration_ms: Some(180_000),
+                available: true,
+                saved: Some(false),
+                context: None,
+                restricted: false,
+            }],
+        }];
+        state.queue_upcoming.push(BrowseItem {
+            id: "t1".into(),
+            kind: EntityKind::Track,
+            title: "Song 1".into(),
+            subtitle: "Artist 1".into(),
+            metadata: String::new(),
+            uri: Some("spotify:track:1".into()),
+            external_url: None,
+            artwork_url: None,
+            artists: Vec::new(),
+            album: None,
+            duration_ms: Some(180_000),
+            available: true,
+            saved: Some(false),
+            context: None,
+            restricted: false,
+        });
+
+        let effects = reduce(&mut state, Action::ToggleSaved);
+        assert_eq!(state.page.sections[0].items[0].saved, Some(true));
+        assert_eq!(state.queue_upcoming[0].saved, Some(true));
+        assert_eq!(effects, vec![Effect::SetSaved { uri: "spotify:track:1".into(), saved: true }]);
+    }
+
+    #[test]
+    fn toggle_saved_in_liked_songs_removes_track_and_stabilizes_cursor() {
+        let mut state = AppState::default();
+        state.page.route = Route::Library;
+        state.page.library_tab = LibraryTab::LikedSongs;
+        state.page.state = LoadState::Ready;
+        state.page.sections = vec![Section {
+            title: "Liked Songs".into(),
+            items: vec![
+                BrowseItem {
+                    id: "t1".into(),
+                    kind: EntityKind::Track,
+                    title: "Song 1".into(),
+                    subtitle: "Artist 1".into(),
+                    metadata: String::new(),
+                    uri: Some("spotify:track:1".into()),
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: Some(180_000),
+                    available: true,
+                    saved: Some(true),
+                    context: None,
+                    restricted: false,
+                },
+                BrowseItem {
+                    id: "t2".into(),
+                    kind: EntityKind::Track,
+                    title: "Song 2".into(),
+                    subtitle: "Artist 2".into(),
+                    metadata: String::new(),
+                    uri: Some("spotify:track:2".into()),
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: Some(180_000),
+                    available: true,
+                    saved: Some(true),
+                    context: None,
+                    restricted: false,
+                },
+            ],
+        }];
+
+        // Unlike the first song
+        let effects = reduce(&mut state, Action::ToggleSaved);
+        assert_eq!(state.page.sections[0].items.len(), 1);
+        assert_eq!(state.page.sections[0].items[0].title, "Song 2");
+        assert_eq!(state.page.cursor.selected, 0);
+        assert_eq!(effects, vec![Effect::SetSaved { uri: "spotify:track:1".into(), saved: false }]);
+    }
+
+    #[test]
+    fn cycle_local_switches_library_tabs() {
+        let mut state = AppState::default();
+        state.page.route = Route::Library;
+        state.library_tab = LibraryTab::LikedSongs;
+
+        let effects = reduce(&mut state, Action::LocalRight);
+        assert_eq!(state.library_tab, LibraryTab::Albums);
+        assert_eq!(
+            effects,
+            vec![Effect::LoadPage {
+                route: Route::Library,
+                generation: state.generation,
+                offset: 0,
+                query: String::new(),
+                tab: Some(LibraryTab::Albums),
+            }]
+        );
+
+        let effects = reduce(&mut state, Action::LocalRight);
+        assert_eq!(state.library_tab, LibraryTab::Playlists);
+        assert_eq!(
+            effects,
+            vec![Effect::LoadPage {
+                route: Route::Library,
+                generation: state.generation,
+                offset: 0,
+                query: String::new(),
+                tab: Some(LibraryTab::Playlists),
+            }]
+        );
+    }
+
+    #[test]
+    fn action_menu_and_playlist_picker_flows() {
+        let mut state = AppState::default();
+        state.page.route = Route::Home;
+        state.page.state = LoadState::Ready;
+        state.page.sections = vec![Section {
+            title: "Tracks".into(),
+            items: vec![BrowseItem {
+                id: "t1".into(),
+                kind: EntityKind::Track,
+                title: "Song 1".into(),
+                subtitle: "Artist 1".into(),
+                metadata: String::new(),
+                uri: Some("spotify:track:1".into()),
+                external_url: None,
+                artwork_url: None,
+                artists: Vec::new(),
+                album: None,
+                duration_ms: Some(180_000),
+                available: true,
+                saved: Some(false),
+                context: None,
+                restricted: false,
+            }],
+        }];
+
+        // Press 'm' / Action::OpenActions opens Overlay::Actions
+        reduce(&mut state, Action::OpenActions);
+        assert!(matches!(state.overlay, Some(Overlay::Actions { .. })));
+
+        // Select AddToPlaylist action
+        let actions = match &state.overlay {
+            Some(Overlay::Actions { actions, .. }) => actions.clone(),
+            _ => panic!("Expected Overlay::Actions"),
+        };
+        let add_to_playlist_idx = actions
+            .iter()
+            .position(|a| *a == ContextAction::AddToPlaylist)
+            .expect("AddToPlaylist action missing");
+        let effects = activate_action_menu(&mut state, add_to_playlist_idx, &actions);
+        assert_eq!(
+            effects,
+            vec![Effect::LoadPlaylistsForPicker { pending_uri: "spotify:track:1".into() }]
+        );
+        assert!(matches!(state.overlay, Some(Overlay::PlaylistPicker { .. })));
+
+        // Picker selection -> AddToPlaylist effect
+        let playlists = vec![BrowseItem {
+            id: "p1".into(),
+            kind: EntityKind::Playlist,
+            title: "Favorites".into(),
+            subtitle: String::new(),
+            metadata: String::new(),
+            uri: Some("spotify:playlist:fav123".into()),
+            external_url: None,
+            artwork_url: None,
+            artists: Vec::new(),
+            album: None,
+            duration_ms: None,
+            available: true,
+            saved: None,
+            context: None,
+            restricted: false,
+        }];
+        let picker_effects = activate_playlist_picker(&mut state, 0, &playlists, "spotify:track:1");
+        assert_eq!(
+            picker_effects,
+            vec![Effect::AddToPlaylist {
+                playlist_id: "fav123".into(),
+                track_uri: "spotify:track:1".into(),
+            }]
+        );
+        assert!(state.overlay.is_none());
     }
 }

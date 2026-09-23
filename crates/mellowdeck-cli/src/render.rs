@@ -387,8 +387,20 @@ fn render_content(
                     section.items.iter().any(|candidate| std::ptr::eq(candidate, *item))
                 })
                 .map_or("", |section| section.title.as_str());
+            let is_liked_song_tab = state.page.route == Route::Library
+                && state.page.library_tab == LibraryTab::LikedSongs;
             let marker = match item.kind {
-                EntityKind::Track => "♪",
+                EntityKind::Track => {
+                    if is_liked_song_tab {
+                        "♥"
+                    } else {
+                        match item.saved {
+                            Some(true) => "♥",
+                            Some(false) => " ",
+                            None => "♪",
+                        }
+                    }
+                }
                 EntityKind::Album => "▣",
                 EntityKind::Artist => "●",
                 EntityKind::Playlist => "≡",
@@ -399,10 +411,21 @@ fn render_content(
             let unavailable = if item.available { "" } else { " unavailable" };
             let duration =
                 item.duration_ms.map_or_else(String::new, |ms| format!("  {}", clock(ms)));
+            let is_liked = marker == "♥";
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!(" {marker} {section} · "),
-                    Style::default().fg(if item.available { PEACH } else { MUTED }),
+                    format!(" {marker} "),
+                    Style::default().fg(if is_liked {
+                        Color::Rgb(255, 120, 150)
+                    } else if item.available {
+                        PEACH
+                    } else {
+                        MUTED
+                    }),
+                ),
+                Span::styled(
+                    if section.is_empty() { String::new() } else { format!("{section} · ") },
+                    Style::default().fg(MUTED),
                 ),
                 Span::styled(
                     item.title.clone(),
@@ -535,6 +558,14 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
         }
         Route::Library => {
             lines.push(Line::from(vec![
+                Span::styled(
+                    " Liked Songs ",
+                    if state.page.library_tab == LibraryTab::LikedSongs {
+                        Style::default().bg(LAVENDER).fg(INK)
+                    } else {
+                        Style::default().fg(MUTED)
+                    },
+                ),
                 Span::styled(
                     " Albums ",
                     if state.page.library_tab == LibraryTab::Albums {
@@ -1508,6 +1539,16 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
     let area = match overlay {
         Overlay::Inspector => centered(76, 16, frame.area()),
         Overlay::Help { .. } => centered(88, 25, frame.area()),
+        Overlay::Actions { actions, .. } => {
+            let height = u16::try_from(actions.len().saturating_add(2)).unwrap_or(12).clamp(6, 18);
+            centered(50, height, frame.area())
+        }
+        Overlay::PlaylistPicker { playlists, .. } => {
+            let height =
+                u16::try_from(playlists.len().saturating_add(2)).unwrap_or(14).clamp(8, 18);
+            centered(55, height, frame.area())
+        }
+        Overlay::RenamePlaylist { .. } => centered(50, 7, frame.area()),
         _ => centered(46, 13, frame.area()),
     };
     frame.render_widget(Clear, area);
@@ -1546,7 +1587,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 ),
                 (
                     "Browse",
-                    "1-5 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · p play · S shuffle · o Spotify · q Queue · d devices · i inspector",
+                    "1-5 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · l like/unlike · m actions · p play · S shuffle · o Spotify · q Queue · d devices · i inspector",
                 ),
                 (
                     "Mouse",
@@ -1593,16 +1634,8 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 area,
             );
         }
-        Overlay::Actions { selected } => {
-            let actions = [
-                "Play",
-                "Add to queue",
-                "Open album",
-                "Choose artist",
-                "Open in Spotify",
-                "Inspect",
-            ];
-            let rows = actions.into_iter().enumerate().map(|(index, action)| {
+        Overlay::Actions { selected, actions } => {
+            let rows = actions.iter().enumerate().map(|(index, action)| {
                 hits.add(
                     Rect {
                         x: area.x + 1,
@@ -1612,12 +1645,60 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                     },
                     HitTarget::ActionRow(index),
                 );
-                ListItem::new(format!(" {} {action}", if index == *selected { "›" } else { " " }))
+                ListItem::new(format!(
+                    " {} {}",
+                    if index == *selected { "›" } else { " " },
+                    action.label()
+                ))
             });
             frame.render_widget(
                 List::new(rows).block(focus_block(" Actions · Esc closes ", true)),
                 area,
             );
+        }
+        Overlay::PlaylistPicker { selected, playlists, .. } => {
+            if playlists.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(" Loading playlists… ")
+                        .block(focus_block(" Add to Playlist · Esc closes ", true)),
+                    area,
+                );
+            } else {
+                let rows = playlists.iter().enumerate().map(|(index, playlist)| {
+                    hits.add(
+                        Rect {
+                            x: area.x + 1,
+                            y: area.y + 1 + u16::try_from(index).unwrap_or(u16::MAX),
+                            width: area.width.saturating_sub(2),
+                            height: 1,
+                        },
+                        HitTarget::PlaylistPickerRow(index),
+                    );
+                    ListItem::new(format!(
+                        " {} {}",
+                        if index == *selected { "›" } else { " " },
+                        playlist.title
+                    ))
+                });
+                frame.render_widget(
+                    List::new(rows)
+                        .block(focus_block(" Add to Playlist · Enter selects · Esc closes ", true)),
+                    area,
+                );
+            }
+        }
+        Overlay::RenamePlaylist { name, .. } => {
+            let input_text = format!(" {name}█");
+            let p = Paragraph::new(vec![
+                Line::from(Span::styled(" Enter new playlist name:", Style::default().fg(MUTED))),
+                Line::from(""),
+                Line::from(Span::styled(
+                    input_text,
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )),
+            ])
+            .block(focus_block(" Rename Playlist · Enter submits · Esc cancels ", true));
+            frame.render_widget(p, area);
         }
         Overlay::DevicePicker => frame.render_widget(
             Paragraph::new(
@@ -1884,6 +1965,7 @@ mod tests {
                 album: None,
                 duration_ms: Some(284_000),
                 available: true,
+                saved: None,
                 context: None,
                 restricted: false,
             }],
@@ -2049,6 +2131,7 @@ mod tests {
             album: None,
             duration_ms: Some(180_000),
             available: true,
+            saved: None,
             context: None,
             restricted: false,
         });
@@ -2095,6 +2178,7 @@ mod tests {
                     album: None,
                     duration_ms: Some(180_000),
                     available: true,
+                    saved: None,
                     context: None,
                     restricted: false,
                 }],

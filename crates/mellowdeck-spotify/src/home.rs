@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use mellowdeck_core::{AppError, ErrorKind, Result, SpotifyItemKind, SpotifyUri};
+use mellowdeck_core::{
+    AlbumId, AlbumSummary, AppError, ArtistId, ArtistSummary, BoxFuture, ErrorKind, Image,
+    LibraryService, Page, Result, SpotifyItemKind, SpotifyUri, Track, TrackId,
+};
 use reqwest::{StatusCode, blocking::Client};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -37,6 +40,7 @@ pub struct SpotifyBrowseItem {
     pub duration_ms: Option<u64>,
     pub available: bool,
     pub position: Option<usize>,
+    pub saved: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,7 +170,7 @@ pub struct SpotifyArtistDetail {
     pub warning: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SpotifyWebApi {
     client: Client,
 }
@@ -376,6 +380,48 @@ impl SpotifyWebApi {
         })
     }
 
+    /// Loads one page of the user's liked tracks from `/me/tracks`.
+    ///
+    /// # Errors
+    /// Returns an error when Spotify rejects the request or returns malformed data.
+    pub fn liked_tracks_page(
+        &self,
+        token: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<SpotifyPage<SpotifyBrowseItem>> {
+        let page: SavedTracksPage = self.get(
+            "/me/tracks",
+            token,
+            &[
+                ("offset", offset.to_string().as_str()),
+                ("limit", limit.min(50).to_string().as_str()),
+            ],
+        )?;
+        let items = page
+            .items
+            .into_iter()
+            .enumerate()
+            .filter_map(|(pos, item)| {
+                item.track.map(|track| {
+                    let mut b = browse_track(
+                        track,
+                        Some(usize::try_from(offset).unwrap_or(0).saturating_add(pos)),
+                    );
+                    b.saved = Some(true);
+                    b
+                })
+            })
+            .collect();
+        Ok(SpotifyPage {
+            items,
+            offset: page.offset.unwrap_or(offset),
+            limit: page.limit.unwrap_or(limit),
+            total: page.total,
+            next_offset: page.next.map(|_| offset.saturating_add(limit)),
+        })
+    }
+
     /// Loads one page of saved albums without collapsing pagination metadata.
     ///
     /// # Errors
@@ -395,7 +441,15 @@ impl SpotifyWebApi {
             ],
         )?;
         Ok(SpotifyPage {
-            items: page.items.into_iter().map(|saved| browse_album(saved.album)).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|saved| {
+                    let mut item = browse_album(saved.album);
+                    item.saved = Some(true);
+                    item
+                })
+                .collect(),
             offset: page.offset.unwrap_or(offset),
             limit: page.limit.unwrap_or(limit),
             total: page.total,
@@ -1003,6 +1057,390 @@ impl SpotifyWebApi {
         )
     }
 
+    /// Checks if tracks are in the current user's library.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request or returns malformed data.
+    pub fn check_saved_tracks(&self, token: &str, track_ids: &[&str]) -> Result<Vec<bool>> {
+        if track_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut results = Vec::with_capacity(track_ids.len());
+        for chunk in track_ids.chunks(50) {
+            let ids_str = chunk.join(",");
+            let chunk_res: Vec<bool> =
+                self.get("/me/tracks/contains", token, &[("ids", &ids_str)])?;
+            results.extend(chunk_res);
+        }
+        Ok(results)
+    }
+
+    /// Saves tracks to the current user's library.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn save_tracks(&self, token: &str, track_ids: &[&str]) -> Result<()> {
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in track_ids.chunks(50) {
+            let body = IdsBody { ids: chunk };
+            let request = self.client.put(format!("{API_BASE_URL}/me/tracks"));
+            Self::send_command(request, token, &body)?;
+        }
+        Ok(())
+    }
+
+    /// Removes tracks from the current user's library.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn remove_tracks(&self, token: &str, track_ids: &[&str]) -> Result<()> {
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in track_ids.chunks(50) {
+            let body = IdsBody { ids: chunk };
+            let request = self.client.delete(format!("{API_BASE_URL}/me/tracks"));
+            Self::send_command(request, token, &body)?;
+        }
+        Ok(())
+    }
+
+    /// Checks if albums are in the current user's library.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request or returns malformed data.
+    pub fn check_saved_albums(&self, token: &str, album_ids: &[&str]) -> Result<Vec<bool>> {
+        if album_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut results = Vec::with_capacity(album_ids.len());
+        for chunk in album_ids.chunks(50) {
+            let ids_str = chunk.join(",");
+            let chunk_res: Vec<bool> =
+                self.get("/me/albums/contains", token, &[("ids", &ids_str)])?;
+            results.extend(chunk_res);
+        }
+        Ok(results)
+    }
+
+    /// Saves albums to the current user's library.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn save_albums(&self, token: &str, album_ids: &[&str]) -> Result<()> {
+        if album_ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in album_ids.chunks(50) {
+            let body = IdsBody { ids: chunk };
+            let request = self.client.put(format!("{API_BASE_URL}/me/albums"));
+            Self::send_command(request, token, &body)?;
+        }
+        Ok(())
+    }
+
+    /// Removes albums from the current user's library.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn remove_albums(&self, token: &str, album_ids: &[&str]) -> Result<()> {
+        if album_ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in album_ids.chunks(50) {
+            let body = IdsBody { ids: chunk };
+            let request = self.client.delete(format!("{API_BASE_URL}/me/albums"));
+            Self::send_command(request, token, &body)?;
+        }
+        Ok(())
+    }
+
+    /// Follows artists on Spotify.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn follow_artists(&self, token: &str, artist_ids: &[&str]) -> Result<()> {
+        if artist_ids.is_empty() {
+            return Ok(());
+        }
+        let ids_str = artist_ids.join(",");
+        let request = self
+            .client
+            .put(format!("{API_BASE_URL}/me/following"))
+            .query(&[("type", "artist"), ("ids", &ids_str)]);
+        Self::send_empty(request, token)
+    }
+
+    /// Unfollows artists on Spotify.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn unfollow_artists(&self, token: &str, artist_ids: &[&str]) -> Result<()> {
+        if artist_ids.is_empty() {
+            return Ok(());
+        }
+        let ids_str = artist_ids.join(",");
+        let request = self
+            .client
+            .delete(format!("{API_BASE_URL}/me/following"))
+            .query(&[("type", "artist"), ("ids", &ids_str)]);
+        Self::send_empty(request, token)
+    }
+
+    /// Checks if the user follows artists on Spotify.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn check_following_artists(&self, token: &str, artist_ids: &[&str]) -> Result<Vec<bool>> {
+        if artist_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut results = Vec::with_capacity(artist_ids.len());
+        for chunk in artist_ids.chunks(50) {
+            let ids_str = chunk.join(",");
+            let chunk_res: Vec<bool> = self.get(
+                "/me/following/contains",
+                token,
+                &[("type", "artist"), ("ids", &ids_str)],
+            )?;
+            results.extend(chunk_res);
+        }
+        Ok(results)
+    }
+
+    /// Saves library items (tracks, albums, or artists) dispatching by URI kind.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the mutation.
+    pub fn save_library_items(&self, token: &str, uris: &[&str]) -> Result<()> {
+        let mut tracks = Vec::new();
+        let mut albums = Vec::new();
+        let mut artists = Vec::new();
+        for uri in uris {
+            if let Ok(parsed) = uri.parse::<SpotifyUri>() {
+                match parsed.kind() {
+                    SpotifyItemKind::Track => tracks.push(parsed.id().to_owned()),
+                    SpotifyItemKind::Album => albums.push(parsed.id().to_owned()),
+                    SpotifyItemKind::Artist => artists.push(parsed.id().to_owned()),
+                    SpotifyItemKind::Playlist => {}
+                }
+            }
+        }
+        if !tracks.is_empty() {
+            let refs: Vec<&str> = tracks.iter().map(String::as_str).collect();
+            self.save_tracks(token, &refs)?;
+        }
+        if !albums.is_empty() {
+            let refs: Vec<&str> = albums.iter().map(String::as_str).collect();
+            self.save_albums(token, &refs)?;
+        }
+        if !artists.is_empty() {
+            let refs: Vec<&str> = artists.iter().map(String::as_str).collect();
+            self.follow_artists(token, &refs)?;
+        }
+        Ok(())
+    }
+
+    /// Removes library items (tracks, albums, or artists) dispatching by URI kind.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the mutation.
+    pub fn remove_library_items(&self, token: &str, uris: &[&str]) -> Result<()> {
+        let mut tracks = Vec::new();
+        let mut albums = Vec::new();
+        let mut artists = Vec::new();
+        for uri in uris {
+            if let Ok(parsed) = uri.parse::<SpotifyUri>() {
+                match parsed.kind() {
+                    SpotifyItemKind::Track => tracks.push(parsed.id().to_owned()),
+                    SpotifyItemKind::Album => albums.push(parsed.id().to_owned()),
+                    SpotifyItemKind::Artist => artists.push(parsed.id().to_owned()),
+                    SpotifyItemKind::Playlist => {}
+                }
+            }
+        }
+        if !tracks.is_empty() {
+            let refs: Vec<&str> = tracks.iter().map(String::as_str).collect();
+            self.remove_tracks(token, &refs)?;
+        }
+        if !albums.is_empty() {
+            let refs: Vec<&str> = albums.iter().map(String::as_str).collect();
+            self.remove_albums(token, &refs)?;
+        }
+        if !artists.is_empty() {
+            let refs: Vec<&str> = artists.iter().map(String::as_str).collect();
+            self.unfollow_artists(token, &refs)?;
+        }
+        Ok(())
+    }
+
+    /// Checks if library items are saved, maintaining URI order.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn contains_library_items(&self, token: &str, uris: &[&str]) -> Result<Vec<bool>> {
+        let mut results = Vec::with_capacity(uris.len());
+        for uri in uris {
+            if let Ok(parsed) = uri.parse::<SpotifyUri>() {
+                let saved = match parsed.kind() {
+                    SpotifyItemKind::Track => self
+                        .check_saved_tracks(token, &[parsed.id()])?
+                        .into_iter()
+                        .next()
+                        .unwrap_or(false),
+                    SpotifyItemKind::Album => self
+                        .check_saved_albums(token, &[parsed.id()])?
+                        .into_iter()
+                        .next()
+                        .unwrap_or(false),
+                    SpotifyItemKind::Artist => self
+                        .check_following_artists(token, &[parsed.id()])?
+                        .into_iter()
+                        .next()
+                        .unwrap_or(false),
+                    SpotifyItemKind::Playlist => false,
+                };
+                results.push(saved);
+            } else {
+                results.push(false);
+            }
+        }
+        Ok(results)
+    }
+
+    /// Adds tracks to a playlist.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn add_to_playlist(
+        &self,
+        token: &str,
+        playlist_id: &str,
+        track_uris: &[&str],
+    ) -> Result<String> {
+        let clean_id = playlist_id.rsplit(':').next().unwrap_or(playlist_id);
+        let body = AddPlaylistTracksBody { uris: track_uris };
+        let response = self
+            .client
+            .post(format!("{API_BASE_URL}/playlists/{clean_id}/tracks"))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .map_err(network_error)?;
+        if !response.status().is_success() {
+            return Err(response_error(&response));
+        }
+        let snap: SnapshotResponse =
+            response.json().unwrap_or(SnapshotResponse { snapshot_id: None });
+        Ok(snap.snapshot_id.unwrap_or_default())
+    }
+
+    /// Removes tracks from a playlist.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn remove_from_playlist(
+        &self,
+        token: &str,
+        playlist_id: &str,
+        track_uris: &[&str],
+    ) -> Result<String> {
+        let clean_id = playlist_id.rsplit(':').next().unwrap_or(playlist_id);
+        let body = RemovePlaylistTracksBody {
+            tracks: track_uris.iter().map(|u| TrackUriObject { uri: u }).collect(),
+        };
+        let response = self
+            .client
+            .delete(format!("{API_BASE_URL}/playlists/{clean_id}/tracks"))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .map_err(network_error)?;
+        if !response.status().is_success() {
+            return Err(response_error(&response));
+        }
+        let snap: SnapshotResponse =
+            response.json().unwrap_or(SnapshotResponse { snapshot_id: None });
+        Ok(snap.snapshot_id.unwrap_or_default())
+    }
+
+    /// Renames a playlist.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn update_playlist(&self, token: &str, playlist_id: &str, name: &str) -> Result<()> {
+        let clean_id = playlist_id.rsplit(':').next().unwrap_or(playlist_id);
+        let body = UpdatePlaylistBody { name };
+        let request = self.client.put(format!("{API_BASE_URL}/playlists/{clean_id}"));
+        Self::send_command(request, token, &body)
+    }
+
+    /// Loads liked tracks conforming to `mellowdeck_core::Page<Track>`.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn liked_tracks_core(
+        &self,
+        token: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<mellowdeck_core::Page<mellowdeck_core::Track>> {
+        let page: SavedTracksPage = self.get(
+            "/me/tracks",
+            token,
+            &[
+                ("offset", offset.to_string().as_str()),
+                ("limit", limit.min(50).to_string().as_str()),
+            ],
+        )?;
+        let items: Vec<mellowdeck_core::Track> = page
+            .items
+            .into_iter()
+            .filter_map(|item| item.track.and_then(|t| track_object_to_core(t).ok()))
+            .collect();
+        Ok(mellowdeck_core::Page {
+            items,
+            offset: page.offset.unwrap_or(offset),
+            limit: page.limit.unwrap_or(limit),
+            total: page.total,
+            next: page.next,
+        })
+    }
+
+    /// Loads saved albums conforming to `mellowdeck_core::Page<AlbumSummary>`.
+    ///
+    /// # Errors
+    /// Returns an error if Spotify rejects the request.
+    pub fn saved_albums_core(
+        &self,
+        token: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<mellowdeck_core::Page<mellowdeck_core::AlbumSummary>> {
+        let page: AlbumPage = self.get(
+            "/me/albums",
+            token,
+            &[
+                ("offset", offset.to_string().as_str()),
+                ("limit", limit.min(50).to_string().as_str()),
+            ],
+        )?;
+        let items: Vec<mellowdeck_core::AlbumSummary> = page
+            .items
+            .into_iter()
+            .filter_map(|item| album_object_to_summary(item.album).ok())
+            .collect();
+        Ok(mellowdeck_core::Page {
+            items,
+            offset: page.offset.unwrap_or(offset),
+            limit: page.limit.unwrap_or(limit),
+            total: page.total,
+            next: page.next,
+        })
+    }
+
     fn recently_played(&self, token: &str) -> Result<Vec<SpotifyDisplayItem>> {
         let page: HistoryPage = self.get("/me/player/recently-played", token, &[("limit", "4")])?;
         Ok(page.items.into_iter().map(|item| track_item(item.track)).collect())
@@ -1167,6 +1605,7 @@ fn browse_track(track: TrackObject, position: Option<usize>) -> SpotifyBrowseIte
         duration_ms: track.duration_ms,
         available: track.is_playable.unwrap_or(true) && !track.is_local && supported,
         position,
+        saved: None,
     }
 }
 
@@ -1186,6 +1625,7 @@ fn browse_album(album: AlbumObject) -> SpotifyBrowseItem {
         duration_ms: None,
         available: true,
         position: None,
+        saved: None,
     }
 }
 
@@ -1205,6 +1645,7 @@ fn browse_artist(artist: ArtistObject) -> SpotifyBrowseItem {
         duration_ms: None,
         available: true,
         position: None,
+        saved: None,
     }
 }
 
@@ -1226,6 +1667,7 @@ fn browse_playlist(playlist: PlaylistObject) -> SpotifyBrowseItem {
         duration_ms: None,
         available: true,
         position: None,
+        saved: None,
     }
 }
 
@@ -1248,6 +1690,7 @@ fn browse_display(
         duration_ms: None,
         available: true,
         position,
+        saved: None,
     }
 }
 
@@ -1611,6 +2054,172 @@ struct SearchAlbumPage {
     next: Option<String>,
 }
 
+#[derive(Serialize)]
+struct IdsBody<'a> {
+    ids: &'a [&'a str],
+}
+
+#[derive(Serialize)]
+struct AddPlaylistTracksBody<'a> {
+    uris: &'a [&'a str],
+}
+
+#[derive(Serialize)]
+struct TrackUriObject<'a> {
+    uri: &'a str,
+}
+
+#[derive(Serialize)]
+struct RemovePlaylistTracksBody<'a> {
+    tracks: Vec<TrackUriObject<'a>>,
+}
+
+#[derive(Serialize)]
+struct UpdatePlaylistBody<'a> {
+    name: &'a str,
+}
+
+#[derive(Deserialize)]
+struct SnapshotResponse {
+    #[allow(dead_code)]
+    snapshot_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SavedTracksPage {
+    #[serde(default)]
+    items: Vec<SavedTrackItem>,
+    #[serde(default)]
+    total: u32,
+    #[allow(dead_code)]
+    next: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct SavedTrackItem {
+    track: Option<TrackObject>,
+}
+
+fn track_object_to_core(track: TrackObject) -> Result<Track> {
+    let uri_str =
+        track.uri.ok_or_else(|| AppError::new(ErrorKind::InvalidInput, "missing track uri"))?;
+    let uri: SpotifyUri =
+        uri_str.parse().map_err(|_| AppError::new(ErrorKind::InvalidInput, "invalid track uri"))?;
+    let id = TrackId::parse(uri.id())
+        .map_err(|_| AppError::new(ErrorKind::InvalidInput, "invalid track id"))?;
+    let artists = track
+        .artists
+        .into_iter()
+        .filter_map(|a| {
+            let a_uri = a.uri.as_deref().and_then(|u| u.parse::<SpotifyUri>().ok())?;
+            let a_id = ArtistId::parse(a_uri.id()).ok()?;
+            Some(ArtistSummary {
+                id: a_id,
+                name: a.name,
+                external_url: a.external_urls.and_then(|u| u.spotify).unwrap_or_default(),
+            })
+        })
+        .collect();
+    let album = if let Some(alb) = track.album {
+        album_object_to_summary(alb)?
+    } else {
+        return Err(AppError::new(ErrorKind::InvalidInput, "track has no album"));
+    };
+    Ok(Track {
+        id,
+        uri,
+        name: track.name,
+        artists,
+        album,
+        duration: Duration::from_millis(track.duration_ms.unwrap_or(0)),
+        explicit: false,
+        playable: track.is_playable.unwrap_or(true),
+        external_url: track.external_urls.and_then(|u| u.spotify).unwrap_or_default(),
+    })
+}
+
+fn album_object_to_summary(album: AlbumObject) -> Result<AlbumSummary> {
+    let uri_str =
+        album.uri.ok_or_else(|| AppError::new(ErrorKind::InvalidInput, "missing album uri"))?;
+    let uri: SpotifyUri =
+        uri_str.parse().map_err(|_| AppError::new(ErrorKind::InvalidInput, "invalid album uri"))?;
+    let id = AlbumId::parse(uri.id())
+        .map_err(|_| AppError::new(ErrorKind::InvalidInput, "invalid album id"))?;
+    let artists = album
+        .artists
+        .into_iter()
+        .filter_map(|a| {
+            let a_uri = a.uri.as_deref().and_then(|u| u.parse::<SpotifyUri>().ok())?;
+            let a_id = ArtistId::parse(a_uri.id()).ok()?;
+            Some(ArtistSummary {
+                id: a_id,
+                name: a.name,
+                external_url: a.external_urls.and_then(|u| u.spotify).unwrap_or_default(),
+            })
+        })
+        .collect();
+    let artwork = album
+        .images
+        .into_iter()
+        .map(|img| Image { url: img.url, width: None, height: None })
+        .collect();
+    Ok(AlbumSummary {
+        id,
+        name: album.name,
+        artists,
+        artwork,
+        external_url: album.external_urls.and_then(|u| u.spotify).unwrap_or_default(),
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct SpotifyLibraryService {
+    api: SpotifyWebApi,
+    token: String,
+}
+
+impl SpotifyLibraryService {
+    #[must_use]
+    pub fn new(api: SpotifyWebApi, token: String) -> Self {
+        Self { api, token }
+    }
+}
+
+impl LibraryService for SpotifyLibraryService {
+    fn liked_tracks(&self, offset: u32, limit: u32) -> BoxFuture<'_, Result<Page<Track>>> {
+        let page = self.api.liked_tracks_core(&self.token, offset, limit);
+        Box::pin(std::future::ready(page))
+    }
+
+    fn saved_albums(&self, offset: u32, limit: u32) -> BoxFuture<'_, Result<Page<AlbumSummary>>> {
+        let page = self.api.saved_albums_core(&self.token, offset, limit);
+        Box::pin(std::future::ready(page))
+    }
+
+    fn save(&self, uris: Vec<SpotifyUri>) -> BoxFuture<'_, Result<()>> {
+        let str_uris: Vec<String> = uris.into_iter().map(String::from).collect();
+        let refs: Vec<&str> = str_uris.iter().map(String::as_str).collect();
+        let result = self.api.save_library_items(&self.token, &refs);
+        Box::pin(std::future::ready(result))
+    }
+
+    fn remove(&self, uris: Vec<SpotifyUri>) -> BoxFuture<'_, Result<()>> {
+        let str_uris: Vec<String> = uris.into_iter().map(String::from).collect();
+        let refs: Vec<&str> = str_uris.iter().map(String::as_str).collect();
+        let result = self.api.remove_library_items(&self.token, &refs);
+        Box::pin(std::future::ready(result))
+    }
+
+    fn contains(&self, uris: Vec<SpotifyUri>) -> BoxFuture<'_, Result<Vec<bool>>> {
+        let str_uris: Vec<String> = uris.into_iter().map(String::from).collect();
+        let refs: Vec<&str> = str_uris.iter().map(String::as_str).collect();
+        let result = self.api.contains_library_items(&self.token, &refs);
+        Box::pin(std::future::ready(result))
+    }
+}
+
 #[derive(Deserialize)]
 struct SearchPlaylistPage {
     #[serde(default)]
@@ -1735,5 +2344,42 @@ mod tests {
         let value = serde_json::to_value(body).unwrap();
         assert_eq!(value["offset"]["position"], 7);
         assert_eq!(value["context_uri"], "spotify:playlist:abc");
+    }
+
+    #[test]
+    fn liked_tracks_shape_parses_items_and_tolerates_null_track() {
+        let page: SavedTracksPage = serde_json::from_str(
+            r#"{
+                "items": [
+                    {"track": {"name": "Let Down", "uri": "spotify:track:123", "duration_ms": 299000}},
+                    {"track": null}
+                ],
+                "total": 1,
+                "limit": 50,
+                "offset": 0
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].track.as_ref().unwrap().name, "Let Down");
+        assert!(page.items[1].track.is_none());
+    }
+
+    #[test]
+    fn check_saved_tracks_parses_boolean_array() {
+        let bools: Vec<bool> = serde_json::from_str(r"[true, false, true]").unwrap();
+        assert_eq!(bools, vec![true, false, true]);
+    }
+
+    #[test]
+    fn playlist_mutation_bodies_serialize_expected_keys() {
+        let add = AddPlaylistTracksBody { uris: &["spotify:track:1", "spotify:track:2"] };
+        let val = serde_json::to_value(add).unwrap();
+        assert_eq!(val["uris"], serde_json::json!(["spotify:track:1", "spotify:track:2"]));
+
+        let remove =
+            RemovePlaylistTracksBody { tracks: vec![TrackUriObject { uri: "spotify:track:1" }] };
+        let val = serde_json::to_value(remove).unwrap();
+        assert_eq!(val["tracks"][0]["uri"], "spotify:track:1");
     }
 }
