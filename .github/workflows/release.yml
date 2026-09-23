@@ -63,14 +63,14 @@ jobs:
             if ($LASTEXITCODE -eq 0) {
               $release = $published | ConvertFrom-Json
               $expected = @(
-                "Mellowdeck-$($existing[0])-windows-x64-unsigned.msi",
-                "Mellowdeck-$($existing[0])-windows-x64-portable-unsigned.zip",
-                "Mellowdeck-$($existing[0])-cli.cdx.json",
-                "Mellowdeck-$($existing[0])-player-host.cdx.json",
-                'featherspot-windows-x86_64.exe',
-                'featherspot-linux-x86_64',
-                'featherspot-macos-x86_64',
-                'featherspot-macos-aarch64',
+                "lspotify-$($existing[0])-windows-x64-unsigned.msi",
+                "lspotify-$($existing[0])-windows-x64-portable-unsigned.zip",
+                "lspotify-$($existing[0])-cli.cdx.json",
+                "lspotify-$($existing[0])-player-host.cdx.json",
+                'lspotify-windows-x86_64.exe',
+                'lspotify-linux-x86_64',
+                'lspotify-macos-x86_64',
+                'lspotify-macos-aarch64',
                 'install.ps1', 'install.cmd', 'checksums.txt', 'SHA256SUMS.txt'
               )
               $assetNames = @($release.assets | ForEach-Object { $_.name })
@@ -135,19 +135,18 @@ jobs:
           toolchain: 1.98.1
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
-      - name: Build featherspot Linux binary
+      - name: Build lspotify Linux binary
         env:
-          FEATHERSPOT_VERSION: ${{ needs.version.outputs.number }}
-          MELLOWDECK_VERSION: ${{ needs.version.outputs.number }}
+          LSPOTIFY_VERSION: ${{ needs.version.outputs.number }}
         run: |
-          cargo build --locked --release -p mellowdeck-cli --bin featherspot
+          cargo build --locked --release -p lspotify-cli --bin lspotify
           mkdir -p dist
-          cp target/release/featherspot dist/featherspot-linux-x86_64
-          chmod +x dist/featherspot-linux-x86_64
+          cp target/release/lspotify dist/lspotify-linux-x86_64
+          chmod +x dist/lspotify-linux-x86_64
       - uses: actions/upload-artifact@v4
         with:
-          name: featherspot-linux-x86_64
-          path: dist/featherspot-linux-x86_64
+          name: lspotify-linux-x86_64
+          path: dist/lspotify-linux-x86_64
 
   build-macos:
     name: Build macOS binaries
@@ -164,21 +163,20 @@ jobs:
           targets: x86_64-apple-darwin, aarch64-apple-darwin
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
-      - name: Build featherspot macOS binaries
+      - name: Build lspotify macOS binaries
         env:
-          FEATHERSPOT_VERSION: ${{ needs.version.outputs.number }}
-          MELLOWDECK_VERSION: ${{ needs.version.outputs.number }}
+          LSPOTIFY_VERSION: ${{ needs.version.outputs.number }}
         run: |
-          cargo build --locked --release --target x86_64-apple-darwin -p mellowdeck-cli --bin featherspot
-          cargo build --locked --release --target aarch64-apple-darwin -p mellowdeck-cli --bin featherspot
+          cargo build --locked --release --target x86_64-apple-darwin -p lspotify-cli --bin lspotify
+          cargo build --locked --release --target aarch64-apple-darwin -p lspotify-cli --bin lspotify
           mkdir -p dist
-          cp target/x86_64-apple-darwin/release/featherspot dist/featherspot-macos-x86_64
-          cp target/aarch64-apple-darwin/release/featherspot dist/featherspot-macos-aarch64
-          chmod +x dist/featherspot-macos-x86_64 dist/featherspot-macos-aarch64
+          cp target/x86_64-apple-darwin/release/lspotify dist/lspotify-macos-x86_64
+          cp target/aarch64-apple-darwin/release/lspotify dist/lspotify-macos-aarch64
+          chmod +x dist/lspotify-macos-x86_64 dist/lspotify-macos-aarch64
       - uses: actions/upload-artifact@v4
         with:
-          name: featherspot-macos
-          path: dist/featherspot-macos-*
+          name: lspotify-macos
+          path: dist/lspotify-macos-*
 
   windows-release:
     name: Package and publish release
@@ -203,17 +201,18 @@ jobs:
 
       - name: Build Windows executables
         env:
-          FEATHERSPOT_VERSION: ${{ needs.version.outputs.number }}
-          MELLOWDECK_VERSION: ${{ needs.version.outputs.number }}
-        run: cargo build --locked --release --target x86_64-pc-windows-msvc -p mellowdeck-cli -p mellowdeck-player-host
+          LSPOTIFY_VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          cargo build --locked --release --target x86_64-pc-windows-msvc -p lspotify-cli --bin lspotify
+          cargo build --locked --release --target x86_64-pc-windows-msvc -p lspotify-player-host
 
       - name: Check release version
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.number }}
         run: |
-          $reported = & target/x86_64-pc-windows-msvc/release/featherspot.exe --version
-          if ($reported -ne "Featherspot $env:RELEASE_VERSION") {
+          $reported = & target/x86_64-pc-windows-msvc/release/lspotify.exe --version
+          if ($reported -ne "lspotify $env:RELEASE_VERSION") {
             throw "The CLI reports '$reported' instead of release version $env:RELEASE_VERSION."
           }
 
@@ -225,12 +224,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: featherspot-linux-x86_64
+          name: lspotify-linux-x86_64
           path: dist
 
       - uses: actions/download-artifact@v4
         with:
-          name: featherspot-macos
+          name: lspotify-macos
           path: dist
 
       - name: Package release assets
@@ -241,14 +240,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/portable | Out-Null
           $built = 'target/x86_64-pc-windows-msvc/release'
-          Copy-Item "$built/mellowdeck-cli.exe" dist/portable/
-          Copy-Item "$built/featherspot.exe" dist/portable/
-          Copy-Item "$built/featherspot.exe" dist/featherspot-windows-x86_64.exe
-          Copy-Item "$built/mellowdeck-player-host.exe" dist/portable/
+          Copy-Item "$built/lspotify.exe" dist/portable/
+          Copy-Item "$built/lspotify.exe" dist/lspotify-windows-x86_64.exe
+          Copy-Item "$built/lspotify-player-host.exe" dist/portable/
           Copy-Item packaging/windows/portable/README.txt dist/portable/
-          Compress-Archive -Path dist/portable/* -DestinationPath "dist/Mellowdeck-$env:RELEASE_TAG-windows-x64-portable-unsigned.zip"
+          Compress-Archive -Path dist/portable/* -DestinationPath "dist/lspotify-$env:RELEASE_TAG-windows-x64-portable-unsigned.zip"
 
-          wix build packaging/windows/wix/Package.wxs -arch x64 -d "SourceDir=$built" -d "ProductVersion=$env:RELEASE_VERSION" -o "dist/Mellowdeck-$env:RELEASE_TAG-windows-x64-unsigned.msi"
+          wix build packaging/windows/wix/Package.wxs -arch x64 -d "SourceDir=$built" -d "ProductVersion=$env:RELEASE_VERSION" -o "dist/lspotify-$env:RELEASE_TAG-windows-x64-unsigned.msi"
           if ($LASTEXITCODE -ne 0) { throw 'WiX could not build the MSI.' }
           ./scripts/generate-windows-sboms.ps1 -ReleaseTag $env:RELEASE_TAG -OutputDir dist
           Copy-Item install.ps1, install.cmd dist/
@@ -259,7 +257,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Featherspot-${{ needs.version.outputs.tag }}-release-artifacts
+          name: lspotify-${{ needs.version.outputs.tag }}-release-artifacts
           path: dist/*
 
       - name: Reserve release tag
@@ -282,7 +280,7 @@ jobs:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
-          $notes = "Featherspot $env:RELEASE_TAG release. Multi-platform terminal Spotify client."
+          $notes = "lspotify $env:RELEASE_TAG release. Multi-platform terminal Spotify client."
           $assets = @(Get-ChildItem -LiteralPath dist -File | ForEach-Object { $_.FullName })
           if ($assets.Count -eq 0) { throw 'No release assets were packaged.' }
           gh release view $env:RELEASE_TAG --json tagName 2>$null | Out-Null
@@ -290,7 +288,7 @@ jobs:
             gh release upload $env:RELEASE_TAG @assets --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Could not upload release assets.' }
           } else {
-            gh release create $env:RELEASE_TAG @assets --target $env:RELEASE_SHA --title "Featherspot $env:RELEASE_TAG" --notes $notes --draft
+            gh release create $env:RELEASE_TAG @assets --target $env:RELEASE_SHA --title "lspotify $env:RELEASE_TAG" --notes $notes --draft
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the draft release.' }
           }
           gh release edit $env:RELEASE_TAG --draft=false --latest

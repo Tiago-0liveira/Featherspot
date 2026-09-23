@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Mellowdeck" Manufacturer="Mellowdeck contributors" Version="$(var.ProductVersion)"
+  <Package Name="lspotify" Manufacturer="lspotify contributors" Version="$(var.ProductVersion)"
            UpgradeCode="71E46D0A-B4E9-4C2A-8D88-7A183A9F4D38" Scope="perUser">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Mellowdeck is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of lspotify is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <StandardDirectory Id="LocalAppDataFolder">
-      <Directory Id="MellowdeckProgramsFolder" Name="Programs">
-        <Directory Id="INSTALLFOLDER" Name="Mellowdeck">
-          <Component Id="MellowdeckExecutable" Guid="4DB53B10-8766-4FE0-963B-E3953830616B">
-            <File Id="MellowdeckCliExe" Source="$(var.SourceDir)\mellowdeck-cli.exe" KeyPath="yes" />
-            <Environment Id="MellowdeckPath" Name="PATH" Action="set" Part="last"
+      <Directory Id="LspotifyProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="lspotify">
+          <Component Id="LspotifyExecutable" Guid="4DB53B10-8766-4FE0-963B-E3953830616B">
+            <File Id="LspotifyCliExe" Source="$(var.SourceDir)\lspotify.exe" KeyPath="yes" />
+            <Environment Id="LspotifyPath" Name="PATH" Action="set" Part="last"
                          System="no" Value="[INSTALLFOLDER]" />
           </Component>
-          <Component Id="MellowdeckPlayerHost" Guid="41066FE6-7CCF-429A-AF86-3966B792B230">
-            <File Id="MellowdeckPlayerHostExe" Source="$(var.SourceDir)\mellowdeck-player-host.exe" KeyPath="yes" />
+          <Component Id="LspotifyPlayerHost" Guid="41066FE6-7CCF-429A-AF86-3966B792B230">
+            <File Id="LspotifyPlayerHostExe" Source="$(var.SourceDir)\lspotify-player-host.exe" KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
     </StandardDirectory>
-    <Feature Id="MainFeature" Title="Mellowdeck" Level="1">
-      <ComponentRef Id="MellowdeckExecutable" />
-      <ComponentRef Id="MellowdeckPlayerHost" />
+    <Feature Id="MainFeature" Title="lspotify" Level="1">
+      <ComponentRef Id="LspotifyExecutable" />
+      <ComponentRef Id="LspotifyPlayerHost" />
     </Feature>
   </Package>
 </Wix>

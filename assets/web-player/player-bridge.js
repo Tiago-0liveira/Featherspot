@@ -38,7 +38,7 @@
   async function initialize() {
     if (!window.Spotify || player) return;
     player = new window.Spotify.Player({
-      name: "Mellowdeck",
+      name: "lspotify",
       getOAuthToken: (callback) => callback(accessToken || ""),
       volume: 0.5,
     });

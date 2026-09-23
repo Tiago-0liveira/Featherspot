@@ -1,6 +1,6 @@
 # Contributing
 
-Use focused changes and keep `mellowdeck-core` free of UI, HTTP, database, WebView, and OS
+Use focused changes and keep `lspotify-core` free of UI, HTTP, database, WebView, and OS
 dependencies. New user-visible strings must be added to both Fluent locale files. New Spotify
 response models must be converted to domain models at the adapter boundary.
 

@@ -1,0 +1,23 @@
+[package]
+name = "lspotify-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lspotify-core = { path = "../lspotify-core" }
+open.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring.workspace = true
+serde_json.workspace = true
+wry.workspace = true
+lspotify-playback = { path = "../lspotify-playback" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "crates/mellowdeck-cli",
-    "crates/mellowdeck-core",
-    "crates/mellowdeck-platform",
-    "crates/mellowdeck-playback",
-    "crates/mellowdeck-player-host",
-    "crates/mellowdeck-spotify",
-    "crates/mellowdeck-storage",
+    "crates/lspotify-cli",
+    "crates/lspotify-core",
+    "crates/lspotify-platform",
+    "crates/lspotify-playback",
+    "crates/lspotify-player-host",
+    "crates/lspotify-spotify",
+    "crates/lspotify-storage",
     "xtask",
 ]
-default-members = ["crates/mellowdeck-cli"]
+default-members = ["crates/lspotify-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -17,7 +17,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98.1"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/mellowdeck/lspotify"
+repository = "https://github.com/Tiago-0liveira/lspotify"
 
 [workspace.dependencies]
 base64 = "=0.22.1"
@@ -56,6 +56,6 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
-[workspace.metadata.mellowdeck]
-product-name = "Mellowdeck"
+[workspace.metadata.lspotify]
+product-name = "lspotify"
 oauth-redirect-uri = "http://127.0.0.1:43821/callback"
