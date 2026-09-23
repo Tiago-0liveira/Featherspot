@@ -47,11 +47,15 @@ impl Session {
         let paths = AppPaths::discover()?;
         let settings = JsonSettingsStore::new(paths.settings);
         let saved = settings.load()?;
+        #[cfg(target_os = "windows")]
+        let credentials: Box<dyn CredentialStore> = Box::new(WindowsCredentialStore::open()?);
+        #[cfg(not(target_os = "windows"))]
+        let credentials: Box<dyn CredentialStore> = Box::new(MemoryCredentialStore::default());
         Ok(Self {
             cli_session: CliSessionStore::new(&paths.data),
             settings,
             client_id: saved.client_id,
-            credentials: credential_store()?,
+            credentials,
             auth: SpotifyAuthenticator::new()?,
             token: None,
         })
@@ -951,15 +955,6 @@ fn app_paths() -> AppPaths {
         .map_or_else(|| PathBuf::from("."), PathBuf::from)
         .join("Mellowdeck");
     AppPaths::under(root)
-}
-
-#[cfg(target_os = "windows")]
-fn credential_store() -> Result<Box<dyn CredentialStore>> {
-    Ok(Box::new(WindowsCredentialStore::open()?))
-}
-#[cfg(not(target_os = "windows"))]
-fn credential_store() -> Result<Box<dyn CredentialStore>> {
-    Ok(Box::new(MemoryCredentialStore::default()))
 }
 
 fn io_error(error: io::Error) -> AppError {

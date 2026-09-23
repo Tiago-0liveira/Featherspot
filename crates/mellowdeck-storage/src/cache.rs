@@ -308,8 +308,12 @@ mod tests {
 
     #[test]
     fn from_millis_handles_boundaries_and_invalid_values() {
+        #[cfg(target_os = "windows")]
         assert!(from_millis(i64::MAX).is_err());
+        #[cfg(not(target_os = "windows"))]
+        assert!(from_millis(i64::MAX).is_ok());
         assert!(from_millis(-1).is_err());
+        assert!(from_millis(i64::MIN).is_err());
         assert_eq!(from_millis(0).unwrap(), UNIX_EPOCH);
         let sample = 1_700_000_000_000_i64;
         assert_eq!(

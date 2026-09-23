@@ -2,7 +2,7 @@
 
 use std::{
     env, fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
 
@@ -21,7 +21,7 @@ fn run() -> io::Result<()> {
     match (arguments.next().as_deref(), arguments.next().as_deref()) {
         (Some("dev"), Some(frontend @ ("gui" | "cli"))) => dev(frontend),
         (Some("build-dist"), None) => build_dist(),
-        (Some("verify-dist"), Some(artifact)) => verify(PathBuf::from(artifact)),
+        (Some("verify-dist"), Some(artifact)) => verify(Path::new(artifact)),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "usage: cargo xtask <dev gui|dev cli|build-dist|verify-dist ARTIFACT>",
@@ -104,7 +104,7 @@ fn build_dist() -> io::Result<()> {
     }
     Ok(())
 }
-fn verify(artifact: PathBuf) -> io::Result<()> {
+fn verify(artifact: &Path) -> io::Result<()> {
     if artifact.is_file() {
         Ok(())
     } else {

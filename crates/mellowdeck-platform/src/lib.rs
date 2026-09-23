@@ -103,52 +103,7 @@ impl BackgroundLocalPlayer {
                 }
                 if let Some(stdout) = child.stdout.take() {
                     let sender = event_sender.clone();
-                    let handle = std::thread::spawn(move || {
-                        for line in
-                            BufReader::new(stdout).lines().map_while(std::result::Result::ok)
-                        {
-                            if let Ok(envelope) = mellowdeck_playback::parse_event(&line) {
-                                let event = match envelope.payload {
-                                    mellowdeck_playback::BridgeEvent::Ready { device_id } => {
-                                        LocalPlayerEvent::Ready { device_id }
-                                    }
-                                    mellowdeck_playback::BridgeEvent::Unavailable { .. } => {
-                                        LocalPlayerEvent::Unavailable
-                                    }
-                                    mellowdeck_playback::BridgeEvent::StateChanged {
-                                        playing,
-                                        position_ms,
-                                        duration_ms,
-                                        track_uri,
-                                        title,
-                                        artist,
-                                        album,
-                                        artwork_url,
-                                    } => LocalPlayerEvent::StateChanged {
-                                        playing,
-                                        position_ms,
-                                        duration_ms,
-                                        track_uri,
-                                        title,
-                                        artist,
-                                        album,
-                                        artwork_url,
-                                    },
-                                    mellowdeck_playback::BridgeEvent::AuthenticationError {
-                                        message,
-                                    } => LocalPlayerEvent::AuthenticationError(message),
-                                    mellowdeck_playback::BridgeEvent::PlaybackError { message } => {
-                                        LocalPlayerEvent::PlaybackError(message)
-                                    }
-                                    mellowdeck_playback::BridgeEvent::AccountError { message } => {
-                                        LocalPlayerEvent::AccountError(message)
-                                    }
-                                };
-                                let _ = sender.send(event);
-                            }
-                        }
-                        let _ = sender.send(LocalPlayerEvent::Unavailable);
-                    });
+                    let handle = std::thread::spawn(move || forward_host_events(stdout, &sender));
                     threads.push(handle);
                 }
                 return Self {
@@ -162,9 +117,7 @@ impl BackgroundLocalPlayer {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            std::thread::spawn(move || {
-                for _ in command_receiver {}
-            });
+            std::thread::spawn(move || for _ in command_receiver {});
         }
         let _ = event_sender.send(LocalPlayerEvent::Unavailable);
         Self {
@@ -246,6 +199,52 @@ impl BackgroundLocalPlayer {
         }
         Ok(())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn forward_host_events(stdout: impl std::io::Read, sender: &mpsc::SyncSender<LocalPlayerEvent>) {
+    for line in BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
+        if let Ok(envelope) = mellowdeck_playback::parse_event(&line) {
+            let event = match envelope.payload {
+                mellowdeck_playback::BridgeEvent::Ready { device_id } => {
+                    LocalPlayerEvent::Ready { device_id }
+                }
+                mellowdeck_playback::BridgeEvent::Unavailable { .. } => {
+                    LocalPlayerEvent::Unavailable
+                }
+                mellowdeck_playback::BridgeEvent::StateChanged {
+                    playing,
+                    position_ms,
+                    duration_ms,
+                    track_uri,
+                    title,
+                    artist,
+                    album,
+                    artwork_url,
+                } => LocalPlayerEvent::StateChanged {
+                    playing,
+                    position_ms,
+                    duration_ms,
+                    track_uri,
+                    title,
+                    artist,
+                    album,
+                    artwork_url,
+                },
+                mellowdeck_playback::BridgeEvent::AuthenticationError { message } => {
+                    LocalPlayerEvent::AuthenticationError(message)
+                }
+                mellowdeck_playback::BridgeEvent::PlaybackError { message } => {
+                    LocalPlayerEvent::PlaybackError(message)
+                }
+                mellowdeck_playback::BridgeEvent::AccountError { message } => {
+                    LocalPlayerEvent::AccountError(message)
+                }
+            };
+            let _ = sender.send(event);
+        }
+    }
+    let _ = sender.send(LocalPlayerEvent::Unavailable);
 }
 
 impl Drop for BackgroundLocalPlayer {
