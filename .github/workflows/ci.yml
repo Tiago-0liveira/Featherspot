@@ -47,6 +47,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
+      - name: Check Windows release SBOMs
+        shell: pwsh
+        run: |
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install cargo-cyclonedx.' }
+          ./scripts/generate-windows-sboms.ps1 -ReleaseTag v0.0.0 -OutputDir dist/ci-sbom
 
   release:
     name: Publish Windows release
