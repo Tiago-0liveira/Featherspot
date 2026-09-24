@@ -115,20 +115,23 @@ impl Session {
     }
 }
 
+pub const APP_VERSION: &str = match option_env!("LSPOTIFY_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub fn entry() {
     let first_arg = env::args().nth(1);
     match first_arg.as_deref() {
         Some("--version" | "-V" | "version") => {
-            let version = option_env!("LSPOTIFY_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-            println!("lspotify {version}");
+            println!("lspotify {APP_VERSION}");
             return;
         }
         Some("update") => {
             println!("Checking for updates...");
             let repo = env::var("LSPOTIFY_REPO")
                 .unwrap_or_else(|_| crate::updater::github::DEFAULT_REPO.to_string());
-            let current_version = env!("CARGO_PKG_VERSION");
-            match crate::updater::update(&repo, current_version) {
+            match crate::updater::update(&repo, APP_VERSION) {
                 Ok(crate::updater::UpdateSummary::AlreadyUpToDate { .. }) => {
                     println!("lspotify is up to date");
                 }
@@ -227,7 +230,7 @@ fn run() -> Result<()> {
     if let Ok(paths) = AppPaths::discover() {
         crate::updater::spawn_background_check(
             paths.data,
-            env!("CARGO_PKG_VERSION").to_string(),
+            APP_VERSION.to_string(),
             None,
             update_tx,
         );
@@ -316,9 +319,10 @@ fn run() -> Result<()> {
         tracing::warn!(%error, "failed to persist CLI session state");
     }
     terminal.restore();
-    // Do not wait for the player-host process: terminal restoration must never depend on it.
+    // Do not wait for background tasks: terminal restoration and exit must never depend on them.
     let _ = local_player.send(LocalPlayerCommand::Shutdown);
     drop(local_player);
+    worker.request_shutdown();
     drop(worker);
     Ok(())
 }
@@ -1341,7 +1345,7 @@ mod terminal_guard_tests {
             "Terminal must be restored immediately before worker shutdown"
         );
 
-        // 5. Worker cleanup / drop can now block without trapping the user
+        // 5. Worker cleanup and terminal restoration never block on the worker thread
         tx.send(()).unwrap();
         worker_thread.join().unwrap();
     }

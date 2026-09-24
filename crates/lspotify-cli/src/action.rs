@@ -1416,19 +1416,51 @@ mod tests {
 
     #[test]
     fn quit_shortcuts_are_global_without_claiming_lowercase_queue() {
-        for (key_event, text_entry, overlay) in [
-            (key(KeyCode::Char('x')), false, None),
-            (key(KeyCode::Char('Q')), false, Some(Overlay::Inspector)),
-            (KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), true, None),
+        let quit_keys = [
+            key(KeyCode::Char('x')),
+            key(KeyCode::Char('Q')),
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+        ];
+
+        let contexts = [
+            (false, None),
+            (true, None),
+            (false, Some(Overlay::Inspector)),
+            (false, Some(Overlay::Help { query: String::new(), editing: false })),
+            (false, Some(Overlay::Help { query: String::new(), editing: true })),
             (
-                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
                 false,
-                Some(Overlay::Help { query: String::new(), editing: true }),
+                Some(Overlay::RenamePlaylist { playlist_id: "p1".into(), name: "test".into() }),
             ),
-        ] {
-            let mut state = AppState { overlay, text_entry, ..AppState::default() };
-            dispatch_key(&mut state, key_event);
-            assert!(state.quit);
+            (false, Some(Overlay::Actions { selected: 0, actions: vec![] })),
+            (
+                false,
+                Some(Overlay::PlaylistPicker {
+                    selected: 0,
+                    playlists: vec![],
+                    pending_uri: "track".into(),
+                }),
+            ),
+            (false, Some(Overlay::DevicePicker)),
+            (false, Some(Overlay::Menu)),
+            (true, Some(Overlay::Help { query: "query".into(), editing: true })),
+        ];
+
+        for key_event in quit_keys {
+            for (text_entry, overlay) in &contexts {
+                let mut state = AppState {
+                    overlay: overlay.clone(),
+                    text_entry: *text_entry,
+                    ..AppState::default()
+                };
+                dispatch_key(&mut state, key_event);
+                assert!(
+                    state.quit,
+                    "Key {key_event:?} must trigger quit with text_entry={text_entry}, overlay={overlay:?}"
+                );
+            }
         }
 
         let mut state = AppState::default();
