@@ -531,6 +531,7 @@ pub struct AppState {
     pub startup_focus_pending: bool,
     pub liked_songs_warmed: bool,
     pub artwork_under_overlays: bool,
+    pub shortcuts: crate::shortcuts::ShortcutRegistry,
 }
 
 impl Default for AppState {
@@ -574,6 +575,7 @@ impl Default for AppState {
             startup_focus_pending: true,
             liked_songs_warmed: false,
             artwork_under_overlays: false,
+            shortcuts: crate::shortcuts::ShortcutRegistry::default(),
         }
     }
 }

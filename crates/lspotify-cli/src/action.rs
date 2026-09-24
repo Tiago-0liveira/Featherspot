@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
+use crate::shortcuts::ShortcutAction;
 use crate::state::{
     AppState, BrowseItem, ContextAction, EntityKind, FocusRegion, LibraryTab, Notice, NoticeKind,
     Overlay, PageState, Route, SearchFilter, actions_for,
@@ -137,11 +138,7 @@ impl HitMap {
 pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     state.startup_focus_pending = false;
     // Exit precedes text entry and overlays. Lower-case q remains the Queue shortcut.
-    let action = if matches!(key.code, KeyCode::Char('x' | 'Q'))
-        || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::SHIFT))
-        || (matches!(key.code, KeyCode::Char('c' | 'q'))
-            && key.modifiers.contains(KeyModifiers::CONTROL))
-    {
+    let action = if state.shortcuts.is_quit(&key) {
         Action::Quit
     } else if state.text_entry
         || matches!(
@@ -174,59 +171,60 @@ pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             _ => return Vec::new(),
         }
     } else {
-        match key.code {
-            KeyCode::Up
-                if state.page.route == Route::Search
-                    && state.focus == FocusRegion::Content
-                    && state.page.cursor.selected == 0 =>
-            {
-                state.text_entry = true;
-                if state.search_query.is_empty() {
-                    state.populate_recent_searches();
-                }
-                return Vec::new();
+        let resolved = state.shortcuts.resolve(&key, &state.page.route, has_detail_actions(state));
+        if matches!(resolved, Some(ShortcutAction::MoveUp))
+            && state.page.route == Route::Search
+            && state.focus == FocusRegion::Content
+            && state.page.cursor.selected == 0
+        {
+            state.text_entry = true;
+            if state.search_query.is_empty() {
+                state.populate_recent_searches();
             }
-            KeyCode::Tab => Action::FocusNext(key.modifiers.contains(KeyModifiers::SHIFT)),
-            KeyCode::Up | KeyCode::Char('k') => Action::Move(-1),
-            KeyCode::Down | KeyCode::Char('j') => Action::Move(1),
-            KeyCode::PageUp => Action::Page(-1),
-            KeyCode::PageDown => Action::Page(1),
-            KeyCode::Home => Action::Home,
-            KeyCode::End => Action::End,
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => Action::Seek(-5_000),
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => Action::Seek(5_000),
-            KeyCode::Left => Action::LocalLeft,
-            KeyCode::Right => Action::LocalRight,
-            KeyCode::Enter => Action::Activate,
-            KeyCode::Esc | KeyCode::Backspace => Action::Cancel,
-            KeyCode::Char('1') => Action::Navigate(Route::Home),
-            KeyCode::Char('2') => Action::Navigate(Route::Search),
-            KeyCode::Char('3') => Action::Navigate(Route::Library),
-            KeyCode::Char('4') => Action::Navigate(Route::Settings),
-            KeyCode::Char('5' | 'q') => Action::Navigate(Route::Queue),
-            KeyCode::Char('/') => Action::StartSearch,
-            KeyCode::Char('f') if state.page.route == Route::Library => Action::StartFilter,
-            KeyCode::Char(' ') => Action::TogglePlayback,
-            KeyCode::Char('[') => Action::Previous,
-            KeyCode::Char(']') => Action::Next,
-            KeyCode::Char('-') => Action::Volume(-5),
-            KeyCode::Char('p' | 'P') if has_detail_actions(state) => Action::PlayDetailContext,
-            KeyCode::Char('S') if has_detail_actions(state) => Action::PlayDetailContextWithShuffle,
-            KeyCode::Char('s')
-                if key.modifiers.contains(KeyModifiers::SHIFT) && has_detail_actions(state) =>
-            {
-                Action::PlayDetailContextWithShuffle
-            }
-            KeyCode::Char('o' | 'O') if has_detail_actions(state) => Action::OpenDetailSpotify,
-            KeyCode::Char('s') => Action::Shuffle,
-            KeyCode::Char('r') => Action::Repeat,
-            KeyCode::Char('d') => Action::Navigate(Route::Devices),
-            KeyCode::Char('a') => Action::Enqueue,
-            KeyCode::Char('l') => Action::ToggleSaved,
-            KeyCode::Char('?') => Action::ToggleHelp,
-            KeyCode::Char('i') => Action::Inspect,
-            KeyCode::Char('m') => Action::OpenActions,
-            _ => return Vec::new(),
+            return Vec::new();
+        }
+        let Some(shortcut) = resolved else {
+            return Vec::new();
+        };
+        match shortcut {
+            ShortcutAction::Quit => Action::Quit,
+            ShortcutAction::Home => Action::Navigate(Route::Home),
+            ShortcutAction::Search => Action::Navigate(Route::Search),
+            ShortcutAction::Library => Action::Navigate(Route::Library),
+            ShortcutAction::Settings => Action::Navigate(Route::Settings),
+            ShortcutAction::Queue => Action::Navigate(Route::Queue),
+            ShortcutAction::Devices => Action::Navigate(Route::Devices),
+            ShortcutAction::FocusNext => Action::FocusNext(false),
+            ShortcutAction::FocusPrevious => Action::FocusNext(true),
+            ShortcutAction::MoveUp => Action::Move(-1),
+            ShortcutAction::MoveDown => Action::Move(1),
+            ShortcutAction::PageUp => Action::Page(-1),
+            ShortcutAction::PageDown => Action::Page(1),
+            ShortcutAction::CursorHome => Action::Home,
+            ShortcutAction::CursorEnd => Action::End,
+            ShortcutAction::PreviousTab => Action::LocalLeft,
+            ShortcutAction::NextTab => Action::LocalRight,
+            ShortcutAction::Activate => Action::Activate,
+            ShortcutAction::Cancel => Action::Cancel,
+            ShortcutAction::StartSearch => Action::StartSearch,
+            ShortcutAction::StartFilter => Action::StartFilter,
+            ShortcutAction::TogglePlayback => Action::TogglePlayback,
+            ShortcutAction::PreviousTrack => Action::Previous,
+            ShortcutAction::NextTrack => Action::Next,
+            ShortcutAction::SeekBackward => Action::Seek(-5_000),
+            ShortcutAction::SeekForward => Action::Seek(5_000),
+            ShortcutAction::VolumeDown => Action::Volume(-5),
+            ShortcutAction::VolumeUp => Action::Volume(5),
+            ShortcutAction::Shuffle => Action::Shuffle,
+            ShortcutAction::Repeat => Action::Repeat,
+            ShortcutAction::AddToQueue => Action::Enqueue,
+            ShortcutAction::ToggleSaved => Action::ToggleSaved,
+            ShortcutAction::OpenActions => Action::OpenActions,
+            ShortcutAction::DetailPlay => Action::PlayDetailContext,
+            ShortcutAction::DetailShuffle => Action::PlayDetailContextWithShuffle,
+            ShortcutAction::DetailOpenSpotify => Action::OpenDetailSpotify,
+            ShortcutAction::ToggleHelp => Action::ToggleHelp,
+            ShortcutAction::Inspect => Action::Inspect,
         }
     };
     reduce(state, action)
