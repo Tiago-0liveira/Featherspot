@@ -11,6 +11,7 @@ use ratatui::{
 use crate::{
     HitMap, HitTarget,
     artwork::{ArtworkManager, ArtworkPlacement},
+    shortcuts::ShortcutAction,
     state::{
         AppState, EntityKind, FocusRegion, LayoutMode, LibraryTab, LoadState, MIN_HEIGHT,
         MIN_WIDTH, Overlay, Route, SearchFilter, SettingsTab,
@@ -55,7 +56,7 @@ fn render_inner(
     frame.render_widget(Block::default().style(Style::default().bg(INK).fg(Color::White)), area);
     match state.layout {
         LayoutMode::Resize => {
-            render_resize(frame, area);
+            render_resize(frame, area, state);
         }
         LayoutMode::SidePlayer => {
             let vertical = Layout::default()
@@ -212,15 +213,28 @@ fn render_inner(
     }
 }
 
+fn shortcut_label(state: &AppState, action: ShortcutAction) -> String {
+    state.shortcuts.primary_label(action)
+}
+
+fn shortcut_list_label(state: &AppState, action: ShortcutAction, separator: &str) -> String {
+    state.shortcuts.list_label(action, separator)
+}
+
 fn render_topbar(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut HitMap) {
+    let home_key = shortcut_label(state, ShortcutAction::Home);
+    let search_key = shortcut_label(state, ShortcutAction::Search);
+    let library_key = shortcut_label(state, ShortcutAction::Library);
+    let settings_key = shortcut_label(state, ShortcutAction::Settings);
     let mut routes = vec![
-        ("1", "⌂ Home", Route::Home),
-        ("2", "⌕ Search", Route::Search),
-        ("3", "▣ Library", Route::Library),
-        ("4", "⚙ Settings", Route::Settings),
+        (home_key, "⌂ Home", Route::Home),
+        (search_key, "⌕ Search", Route::Search),
+        (library_key, "▣ Library", Route::Library),
+        (settings_key, "⚙ Settings", Route::Settings),
     ];
     if !state.layout_has_inline_queue() {
-        routes.push(("5", "☷ Queue", Route::Queue));
+        let queue_key = shortcut_label(state, ShortcutAction::Queue);
+        routes.push((queue_key, "☷ Queue", Route::Queue));
     }
     let (title_prefix, prefix_cells) =
         if area.width < 85 { (" ♪ ", 3) } else { (" ♪ lspotify  ", 13) };
@@ -256,9 +270,11 @@ fn render_topbar(frame: &mut Frame<'_>, area: Rect, state: &AppState, hits: &mut
         area,
     );
 }
-fn render_resize(frame: &mut Frame<'_>, area: Rect) {
+
+fn render_resize(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let quit_hint = state.shortcuts.format_quit_hint();
     let text = format!(
-        "lspotify needs at least {MIN_WIDTH}×{MIN_HEIGHT}\nCurrent: {}×{}\n\nPress x or Ctrl-C to quit",
+        "lspotify needs at least {MIN_WIDTH}×{MIN_HEIGHT}\nCurrent: {}×{}\n\nPress {quit_hint} to quit",
         area.width, area.height
     );
     frame.render_widget(
@@ -705,11 +721,17 @@ fn render_detail_content_header(
 
     // Row 6: Keybind hints moved to the bottom of the header section
     if area.height >= 7 {
+        let enter = shortcut_label(state, ShortcutAction::Activate);
+        let detail_play = shortcut_label(state, ShortcutAction::DetailPlay);
+        let detail_shuffle = shortcut_label(state, ShortcutAction::DetailShuffle);
+        let detail_spotify = shortcut_label(state, ShortcutAction::DetailOpenSpotify);
+        let add_queue = shortcut_label(state, ShortcutAction::AddToQueue);
+        let inspect = shortcut_label(state, ShortcutAction::Inspect);
+        let hint = format!(
+            " {enter} plays · {detail_play} play · {detail_shuffle} shuffle · {detail_spotify} spotify · {add_queue} queues · {inspect} inspects · right-click actions "
+        );
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                " Enter plays · p play · S shuffle · o spotify · a queues · i inspects · right-click actions ",
-                Style::default().fg(SAGE),
-            ))),
+            Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(SAGE)))),
             Rect { x: content_x, y: area.y + 6, width: content_w, height: 1 },
         );
     }
@@ -1598,6 +1620,8 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
     frame.render_widget(Clear, area);
     match overlay {
         Overlay::Menu => {
+            let activate = shortcut_label(state, ShortcutAction::Activate);
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
             let rows = AppState::NAVIGATION.iter().enumerate().map(|(index, route)| {
                 hits.add(
                     Rect {
@@ -1615,33 +1639,97 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 ))
             });
             frame.render_widget(
-                List::new(rows).block(focus_block(" Menu · Enter to open · Esc to close ", true)),
+                List::new(rows).block(focus_block(
+                    format!(" Menu · {activate} to open · {cancel} to close "),
+                    true,
+                )),
                 area,
             );
         }
         Overlay::Help { query, .. } => {
+            let focus_next = shortcut_label(state, ShortcutAction::FocusNext);
+            let focus_prev = shortcut_label(state, ShortcutAction::FocusPrevious);
+            let move_up = shortcut_label(state, ShortcutAction::MoveUp);
+            let move_down = shortcut_label(state, ShortcutAction::MoveDown);
+            let page_up = shortcut_label(state, ShortcutAction::PageUp);
+            let page_down = shortcut_label(state, ShortcutAction::PageDown);
+            let cursor_home = shortcut_label(state, ShortcutAction::CursorHome);
+            let cursor_end = shortcut_label(state, ShortcutAction::CursorEnd);
+            let activate = shortcut_label(state, ShortcutAction::Activate);
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
+
+            let move_keys = if state.shortcuts.get_bindings(ShortcutAction::MoveUp).len() > 1
+                && state.shortcuts.get_bindings(ShortcutAction::MoveDown).len() > 1
+            {
+                let up2 = state.shortcuts.get_bindings(ShortcutAction::MoveUp)[1].display_symbol();
+                let down2 =
+                    state.shortcuts.get_bindings(ShortcutAction::MoveDown)[1].display_symbol();
+                format!("{move_up}{move_down} or {down2}/{up2}")
+            } else {
+                format!("{move_up}{move_down}")
+            };
+
+            let toggle_playback = shortcut_label(state, ShortcutAction::TogglePlayback);
+            let prev_track = shortcut_label(state, ShortcutAction::PreviousTrack);
+            let next_track = shortcut_label(state, ShortcutAction::NextTrack);
+            let seek_back = shortcut_label(state, ShortcutAction::SeekBackward);
+            let seek_fwd = shortcut_label(state, ShortcutAction::SeekForward);
+            let vol_down = shortcut_label(state, ShortcutAction::VolumeDown);
+            let vol_up = shortcut_label(state, ShortcutAction::VolumeUp);
+            let shuffle = shortcut_label(state, ShortcutAction::Shuffle);
+            let repeat = shortcut_label(state, ShortcutAction::Repeat);
+
+            let home_key = shortcut_label(state, ShortcutAction::Home);
+            let settings_key = shortcut_label(state, ShortcutAction::Settings);
+            let queue_has_five = state
+                .shortcuts
+                .get_bindings(ShortcutAction::Queue)
+                .iter()
+                .any(|b| *b == crate::shortcuts::KeyBinding::char('5'));
+            let views_end = if queue_has_five { "5" } else { &settings_key };
+            let views = format!("{home_key}-{views_end} views");
+
+            let search = shortcut_label(state, ShortcutAction::StartSearch);
+            let filter = shortcut_label(state, ShortcutAction::StartFilter);
+            let prev_tab = shortcut_label(state, ShortcutAction::PreviousTab);
+            let next_tab = shortcut_label(state, ShortcutAction::NextTab);
+            let add_queue = shortcut_label(state, ShortcutAction::AddToQueue);
+            let toggle_saved = shortcut_label(state, ShortcutAction::ToggleSaved);
+            let open_actions = shortcut_label(state, ShortcutAction::OpenActions);
+            let detail_play = shortcut_label(state, ShortcutAction::DetailPlay);
+            let detail_shuffle = shortcut_label(state, ShortcutAction::DetailShuffle);
+            let detail_spotify = shortcut_label(state, ShortcutAction::DetailOpenSpotify);
+            let queue = shortcut_label(state, ShortcutAction::Queue);
+            let devices = shortcut_label(state, ShortcutAction::Devices);
+            let inspect = shortcut_label(state, ShortcutAction::Inspect);
+
+            let toggle_help = shortcut_label(state, ShortcutAction::ToggleHelp);
+            let quit_list = shortcut_list_label(state, ShortcutAction::Quit, " · ");
+
+            let nav_body = format!(
+                "{focus_next}/{focus_prev} focus · {move_keys} select · {page_up}/{page_down} · {cursor_home}/{cursor_end} · {activate} activate · {cancel} back"
+            );
+            let play_body = format!(
+                "{toggle_playback} play/pause · {prev_track} {next_track} previous/next · {seek_back}/{seek_fwd} seek · {vol_down}/{vol_up} volume · {shuffle} shuffle · {repeat} repeat"
+            );
+            let browse_body = format!(
+                "{views} · {search} search · {filter} filter Library · {prev_tab}/{next_tab} filters/tabs · {add_queue} add to queue · {toggle_saved} like/unlike · {open_actions} actions · {detail_play} play · {detail_shuffle} shuffle · {detail_spotify} Spotify · {queue} Queue · {devices} devices · {inspect} inspector"
+            );
+            let mouse_body =
+                "Click selects · double-click activates · right-click actions · wheel scrolls hovered pane"
+                    .to_string();
+            let help_body = format!(
+                "{toggle_help} opens Help · type to filter sections · Backspace edits · {activate} stops editing · {cancel} closes"
+            );
+            let session_body = format!("{quit_list} quit from any screen");
+
             let sections = [
-                (
-                    "Navigation",
-                    "Tab/Shift+Tab focus · ↑↓ or j/k select · PgUp/PgDn · Home/End · Enter activate · Esc back",
-                ),
-                (
-                    "Playback",
-                    "Space play/pause · [ ] previous/next · Shift+←/→ seek · -/+ volume · s shuffle · r repeat",
-                ),
-                (
-                    "Browse",
-                    "1-5 views · / search · f filter Library · ←/→ filters/tabs · a add to queue · l like/unlike · m actions · p play · S shuffle · o Spotify · q Queue · d devices · i inspector",
-                ),
-                (
-                    "Mouse",
-                    "Click selects · double-click activates · right-click actions · wheel scrolls hovered pane",
-                ),
-                (
-                    "Help",
-                    "? opens Help · type to filter sections · Backspace edits · Enter stops editing · Esc closes",
-                ),
-                ("Session", "x · Shift+Q · Ctrl+C · Ctrl+Q quit from any screen"),
+                ("Navigation", nav_body),
+                ("Playback", play_body),
+                ("Browse", browse_body),
+                ("Mouse", mouse_body),
+                ("Help", help_body),
+                ("Session", session_body),
             ];
             let needle = query.to_lowercase();
             let lines = sections
@@ -1663,22 +1751,25 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 })
                 .collect::<Vec<_>>();
             frame.render_widget(
-                Paragraph::new(lines)
-                    .wrap(Wrap { trim: true })
-                    .block(focus_block(format!(" Help · filter: {query} · Esc closes "), true)),
+                Paragraph::new(lines).wrap(Wrap { trim: true }).block(focus_block(
+                    format!(" Help · filter: {query} · {cancel} closes "),
+                    true,
+                )),
                 area,
             );
         }
         Overlay::Inspector => {
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
             let text = state.selected_item().map_or_else(|| "No item selected".into(), |item| format!("{}\n{}\n\nType: {:?}\nURI: {}\nArtists: {}\nAlbum: {}\nDuration: {}\nAvailability: {}\n\n{}", item.title, item.subtitle, item.kind, item.uri.as_deref().unwrap_or("—"), item.artists.iter().map(|artist| artist.0.as_str()).collect::<Vec<_>>().join(", "), item.album.as_ref().map_or("—", |album| album.0.as_str()), item.duration_ms.map_or_else(|| "—".into(), clock), if item.available { "available" } else { "unavailable" }, item.metadata));
             frame.render_widget(
                 Paragraph::new(text)
                     .wrap(Wrap { trim: true })
-                    .block(focus_block(" Inspector · Esc closes ", true)),
+                    .block(focus_block(format!(" Inspector · {cancel} closes "), true)),
                 area,
             );
         }
         Overlay::Actions { selected, actions } => {
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
             let rows = actions.iter().enumerate().map(|(index, action)| {
                 hits.add(
                     Rect {
@@ -1696,15 +1787,17 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 ))
             });
             frame.render_widget(
-                List::new(rows).block(focus_block(" Actions · Esc closes ", true)),
+                List::new(rows).block(focus_block(format!(" Actions · {cancel} closes "), true)),
                 area,
             );
         }
         Overlay::PlaylistPicker { selected, playlists, .. } => {
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
+            let activate = shortcut_label(state, ShortcutAction::Activate);
             if playlists.is_empty() {
                 frame.render_widget(
                     Paragraph::new(" Loading playlists… ")
-                        .block(focus_block(" Add to Playlist · Esc closes ", true)),
+                        .block(focus_block(format!(" Add to Playlist · {cancel} closes "), true)),
                     area,
                 );
             } else {
@@ -1725,13 +1818,17 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                     ))
                 });
                 frame.render_widget(
-                    List::new(rows)
-                        .block(focus_block(" Add to Playlist · Enter selects · Esc closes ", true)),
+                    List::new(rows).block(focus_block(
+                        format!(" Add to Playlist · {activate} selects · {cancel} closes "),
+                        true,
+                    )),
                     area,
                 );
             }
         }
         Overlay::RenamePlaylist { name, .. } => {
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
+            let activate = shortcut_label(state, ShortcutAction::Activate);
             let input_text = format!(" {name}█");
             let p = Paragraph::new(vec![
                 Line::from(Span::styled(" Enter new playlist name:", Style::default().fg(MUTED))),
@@ -1741,10 +1838,15 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 )),
             ])
-            .block(focus_block(" Rename Playlist · Enter submits · Esc cancels ", true));
+            .block(focus_block(
+                format!(" Rename Playlist · {activate} submits · {cancel} cancels "),
+                true,
+            ));
             frame.render_widget(p, area);
         }
         Overlay::ShortcutCapture { action, conflict: Some((key, conflicting_action)) } => {
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
+            let activate = shortcut_label(state, ShortcutAction::Activate);
             let lines = vec![
                 Line::from(Span::styled(
                     format!(" Key '{}' is already bound to:", key.to_canonical()),
@@ -1761,7 +1863,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    " Enter reassigns · Esc cancels",
+                    format!(" {activate} reassigns · {cancel} cancels"),
                     Style::default().fg(PEACH),
                 )),
             ];
@@ -1771,6 +1873,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
             );
         }
         Overlay::ShortcutCapture { action, conflict: None } => {
+            let cancel = shortcut_label(state, ShortcutAction::Cancel);
             let current = state.shortcuts.list_label(*action, ", ");
             let lines = vec![
                 Line::from(Span::styled(
@@ -1788,7 +1891,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    " Esc cancels · Delete unbinds",
+                    format!(" {cancel} cancels · Delete unbinds"),
                     Style::default().fg(MUTED),
                 )),
             ];
@@ -1902,7 +2005,7 @@ mod tests {
 
     #[test]
     fn undersized_terminal_keeps_quit_instruction() {
-        assert!(draw(79, 20).contains("Ctrl-C"));
+        assert!(draw(79, 20).contains("Ctrl+C"));
     }
 
     #[test]
