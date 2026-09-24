@@ -241,10 +241,12 @@ impl BackgroundLocalPlayer {
     ///
     /// Returns an error if lifecycle state has been poisoned.
     pub fn shutdown_with_reason(&self, reason: &str) -> Result<()> {
-        let mut shutdown_guard = self.shutdown_reason.lock().map_err(|_| poisoned())?;
-        if shutdown_guard.is_none() {
-            tracing::info!(reason, "shutting down player-host helper");
-            *shutdown_guard = Some(reason.to_string());
+        {
+            let mut shutdown_guard = self.shutdown_reason.lock().map_err(|_| poisoned())?;
+            if shutdown_guard.is_none() {
+                tracing::info!(reason, "shutting down player-host helper");
+                *shutdown_guard = Some(reason.to_string());
+            }
         }
         let _ = self.commands.send(LocalPlayerCommand::Shutdown);
         *self.ready.lock().map_err(|_| poisoned())? = false;
@@ -327,7 +329,7 @@ fn forward_host_events(
                     LocalPlayerEvent::AccountError(message)
                 }
             };
-            let _ = sender.send(event);
+            let _ = sender.try_send(event);
         }
     }
     if let Ok(mut reason) = shutdown_reason.lock()
@@ -337,7 +339,7 @@ fn forward_host_events(
         tracing::warn!(reason = %unexpected, "local player host terminated");
         *reason = Some(unexpected);
     }
-    let _ = sender.send(LocalPlayerEvent::Unavailable);
+    let _ = sender.try_send(LocalPlayerEvent::Unavailable);
 }
 
 impl Drop for BackgroundLocalPlayer {
@@ -520,6 +522,63 @@ mod tests {
         player.shutdown_with_reason("test shutdown").unwrap();
         assert_eq!(player.shutdown_reason().unwrap().as_deref(), Some("test shutdown"));
         assert_eq!(player.device_id().unwrap(), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shutdown_releases_reason_lock_before_joining_host_threads() {
+        let (_event_sender, events) = mpsc::sync_channel(1);
+        let (commands, _command_receiver) = mpsc::sync_channel(1);
+        let shutdown_reason = Arc::new(Mutex::new(None));
+        let thread_reason = Arc::clone(&shutdown_reason);
+
+        let reader_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            let _guard = thread_reason.lock().expect("shutdown reason lock");
+        });
+
+        let player = BackgroundLocalPlayer {
+            events: Mutex::new(events),
+            commands,
+            ready: Mutex::new(false),
+            pid: Mutex::new(None),
+            device_id: Mutex::new(None),
+            shutdown_reason,
+            child: Mutex::new(None),
+            threads: Mutex::new(vec![reader_thread]),
+        };
+
+        let (done_sender, done_receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = player.shutdown_with_reason("test shutdown");
+            let _ = done_sender.send(result);
+        });
+
+        let result = done_receiver
+            .recv_timeout(Duration::from_millis(500))
+            .expect("shutdown must not deadlock while joining a thread that reads shutdown_reason");
+        assert!(result.is_ok());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn host_event_forwarder_does_not_block_when_event_queue_is_full() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(LocalPlayerEvent::Unavailable).unwrap();
+
+        let shutdown_reason = Arc::new(Mutex::new(Some("test shutdown".to_string())));
+        let reason = Arc::clone(&shutdown_reason);
+        let (done_sender, done_receiver) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            forward_host_events(std::io::Cursor::new(Vec::<u8>::new()), &sender, reason.as_ref());
+            let _ = done_sender.send(());
+        });
+
+        done_receiver
+            .recv_timeout(Duration::from_millis(500))
+            .expect("event forwarding must not block when the UI stopped draining events");
+        drop(receiver);
     }
 
     #[test]
