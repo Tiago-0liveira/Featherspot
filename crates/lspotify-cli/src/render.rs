@@ -2580,4 +2580,66 @@ mod tests {
 
         assert!(manager.has_placement(ArtworkPlacement::Player));
     }
+
+    #[test]
+    fn dynamic_shortcut_labels_reflect_reconfigured_keys() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState {
+            overlay: Some(crate::state::Overlay::Help { query: String::new(), editing: false }),
+            ..Default::default()
+        };
+
+        // Reconfigure Play/Pause from Space to p, and Quit to F10
+        state.shortcuts.force_assign(
+            ShortcutAction::TogglePlayback,
+            crate::shortcuts::KeyBinding::parse("p").unwrap(),
+        );
+        state.shortcuts.force_assign(
+            ShortcutAction::Quit,
+            crate::shortcuts::KeyBinding::parse("Ctrl+Q").unwrap(),
+        );
+
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(output.contains("p play/pause"));
+        assert!(!output.contains("Space play/pause"));
+        assert!(output.contains("Ctrl+Q quit from any screen"));
+    }
+
+    #[test]
+    fn topbar_reflects_reconfigured_navigation_shortcuts() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+
+        state
+            .shortcuts
+            .force_assign(ShortcutAction::Home, crate::shortcuts::KeyBinding::parse("h").unwrap());
+        state.shortcuts.force_assign(
+            ShortcutAction::Search,
+            crate::shortcuts::KeyBinding::parse("s").unwrap(),
+        );
+
+        let mut hits = HitMap::default();
+        terminal.draw(|frame| render(frame, &mut state, &mut hits)).unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(output.contains("[h] ⌂ Home"));
+        assert!(output.contains("[s] ⌕ Search"));
+    }
 }

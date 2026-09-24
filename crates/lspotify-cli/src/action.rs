@@ -2779,4 +2779,104 @@ mod tests {
         assert_eq!(state.page.sections[0].items[0].title, "Artwork behind menus: disabled");
         assert_eq!(effects2, vec![Effect::SaveSettings]);
     }
+
+    #[test]
+    fn custom_binding_triggers_action_and_old_stops() {
+        let mut state = AppState::default();
+        let space_key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        let p_key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+
+        assert_eq!(dispatch_key(&mut state, space_key), vec![Effect::TogglePlayback]);
+        assert!(dispatch_key(&mut state, p_key).is_empty());
+
+        state.shortcuts.force_assign(
+            crate::shortcuts::ShortcutAction::TogglePlayback,
+            crate::shortcuts::KeyBinding::parse("p").unwrap(),
+        );
+
+        assert_eq!(dispatch_key(&mut state, p_key), vec![Effect::TogglePlayback]);
+        assert!(dispatch_key(&mut state, space_key).is_empty());
+    }
+
+    #[test]
+    fn global_quit_works_in_text_entry_and_overlays() {
+        let mut state = AppState::default();
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let shift_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT);
+        let lower_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+
+        // In text entry
+        state.page.route = Route::Search;
+        state.text_entry = true;
+        dispatch_key(&mut state, ctrl_c);
+        assert!(state.quit);
+
+        state.quit = false;
+        state.text_entry = true;
+        dispatch_key(&mut state, shift_q);
+        assert!(state.quit);
+
+        state.quit = false;
+        state.text_entry = true;
+        let effects = dispatch_key(&mut state, lower_q);
+        assert!(effects.is_empty());
+        assert_eq!(state.search_query, "q");
+        assert!(!state.quit);
+
+        // In an overlay
+        state.text_entry = false;
+        state.overlay = Some(crate::state::Overlay::Help { query: String::new(), editing: false });
+        dispatch_key(&mut state, ctrl_c);
+        assert!(state.quit);
+    }
+
+    #[test]
+    fn plus_and_minus_perform_volume_controls() {
+        let mut state = AppState::default();
+        let initial_volume = state.playback.volume;
+        let plus = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE);
+        let minus = KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE);
+
+        let effects_plus = dispatch_key(&mut state, plus);
+        assert_eq!(effects_plus, vec![Effect::Volume(initial_volume.saturating_add(5).min(100))]);
+
+        let effects_minus = dispatch_key(&mut state, minus);
+        assert_eq!(effects_minus, vec![Effect::Volume(initial_volume)]);
+    }
+
+    #[test]
+    fn shortcut_capture_and_reassignment_flow() {
+        let mut state = AppState::default();
+        let effects = activate_setting(&mut state, "shortcut:toggle_playback");
+        assert!(effects.is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(crate::state::Overlay::ShortcutCapture {
+                action: crate::shortcuts::ShortcutAction::TogglePlayback,
+                conflict: None,
+            })
+        ));
+
+        let bracket = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE);
+        assert!(dispatch_key(&mut state, bracket).is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(crate::state::Overlay::ShortcutCapture {
+                action: crate::shortcuts::ShortcutAction::TogglePlayback,
+                conflict: Some(_),
+            })
+        ));
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let save_effects = dispatch_key(&mut state, enter);
+        assert_eq!(save_effects, vec![Effect::SaveSettings]);
+        assert!(state.overlay.is_none());
+        assert_eq!(
+            state.shortcuts.primary_canonical(crate::shortcuts::ShortcutAction::TogglePlayback),
+            "]"
+        );
+        assert!(
+            state.shortcuts.get_bindings(crate::shortcuts::ShortcutAction::NextTrack).is_empty()
+        );
+    }
 }

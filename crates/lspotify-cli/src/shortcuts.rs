@@ -923,4 +923,106 @@ mod tests {
         assert_eq!(registry.get_bindings(ShortcutAction::NextTrack), &[space]);
         assert!(registry.get_bindings(ShortcutAction::TogglePlayback).is_empty());
     }
+
+    #[test]
+    fn default_bindings_reproduce_current_behavior() {
+        let registry = ShortcutRegistry::default();
+        let home = Route::Home;
+        let album = Route::Album { uri: "spotify:album:1".into(), title: "Album".into() };
+        let library = Route::Library;
+
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let shift_key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+
+        // Playback
+        assert_eq!(registry.resolve(&key(' '), &home, false), Some(ShortcutAction::TogglePlayback));
+        assert_eq!(registry.resolve(&key('['), &home, false), Some(ShortcutAction::PreviousTrack));
+        assert_eq!(registry.resolve(&key(']'), &home, false), Some(ShortcutAction::NextTrack));
+        assert_eq!(registry.resolve(&key('-'), &home, false), Some(ShortcutAction::VolumeDown));
+        assert_eq!(registry.resolve(&key('+'), &home, false), Some(ShortcutAction::VolumeUp));
+        assert_eq!(registry.resolve(&key('s'), &home, false), Some(ShortcutAction::Shuffle));
+        assert_eq!(registry.resolve(&key('r'), &home, false), Some(ShortcutAction::Repeat));
+
+        // Navigation
+        assert_eq!(registry.resolve(&key('1'), &home, false), Some(ShortcutAction::Home));
+        assert_eq!(registry.resolve(&key('2'), &home, false), Some(ShortcutAction::Search));
+        assert_eq!(registry.resolve(&key('3'), &home, false), Some(ShortcutAction::Library));
+        assert_eq!(registry.resolve(&key('4'), &home, false), Some(ShortcutAction::Settings));
+        assert_eq!(registry.resolve(&key('5'), &home, false), Some(ShortcutAction::Queue));
+        assert_eq!(registry.resolve(&key('q'), &home, false), Some(ShortcutAction::Queue));
+        assert_eq!(registry.resolve(&key('d'), &home, false), Some(ShortcutAction::Devices));
+
+        // General actions
+        assert_eq!(registry.resolve(&key('/'), &home, false), Some(ShortcutAction::StartSearch));
+        assert_eq!(registry.resolve(&key('a'), &home, false), Some(ShortcutAction::AddToQueue));
+        assert_eq!(registry.resolve(&key('l'), &home, false), Some(ShortcutAction::ToggleSaved));
+        assert_eq!(registry.resolve(&key('m'), &home, false), Some(ShortcutAction::OpenActions));
+        assert_eq!(registry.resolve(&key('?'), &home, false), Some(ShortcutAction::ToggleHelp));
+        assert_eq!(registry.resolve(&key('i'), &home, false), Some(ShortcutAction::Inspect));
+
+        // Contextual: Library filter
+        assert_eq!(registry.resolve(&key('f'), &library, false), Some(ShortcutAction::StartFilter));
+        assert_eq!(registry.resolve(&key('f'), &home, false), None);
+
+        // Contextual: Detail page actions
+        assert_eq!(registry.resolve(&key('p'), &album, true), Some(ShortcutAction::DetailPlay));
+        assert_eq!(
+            registry.resolve(&shift_key('S'), &album, true),
+            Some(ShortcutAction::DetailShuffle)
+        );
+        assert_eq!(
+            registry.resolve(&key('o'), &album, true),
+            Some(ShortcutAction::DetailOpenSpotify)
+        );
+        assert_eq!(registry.resolve(&key('p'), &home, false), None);
+    }
+
+    #[test]
+    fn settings_round_trip_preserves_overrides() {
+        let mut registry = ShortcutRegistry::default();
+        registry.force_assign(ShortcutAction::TogglePlayback, KeyBinding::parse("p").unwrap());
+        registry.force_assign(ShortcutAction::NextTrack, KeyBinding::parse("Shift+N").unwrap());
+        let overrides = registry.to_overrides();
+        assert_eq!(overrides.get("toggle_playback").unwrap(), &vec!["p".to_string()]);
+        assert_eq!(overrides.get("next_track").unwrap(), &vec!["Shift+N".to_string()]);
+
+        let mut new_registry = ShortcutRegistry::default();
+        new_registry.load_overrides(&overrides);
+        assert_eq!(new_registry.to_overrides(), overrides);
+        assert_eq!(new_registry.primary_canonical(ShortcutAction::TogglePlayback), "p");
+        assert_eq!(new_registry.primary_canonical(ShortcutAction::NextTrack), "Shift+N");
+    }
+
+    #[test]
+    fn older_settings_files_load_default_shortcuts() {
+        let empty_overrides = std::collections::BTreeMap::new();
+        let mut registry = ShortcutRegistry::default();
+        registry.load_overrides(&empty_overrides);
+        assert_eq!(
+            registry.get_bindings(ShortcutAction::TogglePlayback),
+            ShortcutAction::TogglePlayback.default_bindings()
+        );
+        assert_eq!(
+            registry.get_bindings(ShortcutAction::Queue),
+            ShortcutAction::Queue.default_bindings()
+        );
+        assert_eq!(
+            registry.get_bindings(ShortcutAction::Quit),
+            ShortcutAction::Quit.default_bindings()
+        );
+    }
+
+    #[test]
+    fn scope_conflict_rules() {
+        let mut registry = ShortcutRegistry::default();
+        // Global Quit vs General Playback
+        let quit_key = KeyBinding::parse("x").unwrap();
+        let err = registry.try_assign(ShortcutAction::TogglePlayback, quit_key).unwrap_err();
+        assert_eq!(err.conflicting_action, ShortcutAction::Quit);
+
+        // General vs Detail: both conflict
+        let p_key = KeyBinding::parse("p").unwrap();
+        let err2 = registry.try_assign(ShortcutAction::TogglePlayback, p_key).unwrap_err();
+        assert_eq!(err2.conflicting_action, ShortcutAction::DetailPlay);
+    }
 }
