@@ -285,6 +285,17 @@ impl Scope {
     }
 }
 
+impl fmt::Display for Scope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Global => write!(f, "Global"),
+            Self::General => write!(f, "General"),
+            Self::Library => write!(f, "Library"),
+            Self::Detail => write!(f, "Detail"),
+        }
+    }
+}
+
 /// Representation of a key binding that matches crossterm `KeyEvent`s.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct KeyBinding {
@@ -311,6 +322,31 @@ impl KeyBinding {
     #[must_use]
     pub const fn char_with_shift(ch: char) -> Self {
         Self { code: KeyCode::Char(ch), modifiers: KeyModifiers::SHIFT }
+    }
+
+    /// Creates a `KeyBinding` from a crossterm `KeyEvent`.
+    #[must_use]
+    pub fn from_event(event: &KeyEvent) -> Self {
+        let mut modifiers =
+            event.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
+        let code = match event.code {
+            KeyCode::BackTab => {
+                modifiers |= KeyModifiers::SHIFT;
+                KeyCode::Tab
+            }
+            KeyCode::Char(ch) => {
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    KeyCode::Char(ch.to_ascii_lowercase())
+                } else if ch.is_ascii_uppercase() {
+                    modifiers |= KeyModifiers::SHIFT;
+                    KeyCode::Char(ch)
+                } else {
+                    KeyCode::Char(ch)
+                }
+            }
+            other => other,
+        };
+        Self { code, modifiers }
     }
 
     /// Parses a canonical string representation such as `"x"`, `"Shift+Q"`, `"Ctrl+C"`, `"Space"`.

@@ -13,7 +13,7 @@ use crate::{
     artwork::{ArtworkManager, ArtworkPlacement},
     state::{
         AppState, EntityKind, FocusRegion, LayoutMode, LibraryTab, LoadState, MIN_HEIGHT,
-        MIN_WIDTH, Overlay, Route, SearchFilter,
+        MIN_WIDTH, Overlay, Route, SearchFilter, SettingsTab,
     },
 };
 
@@ -337,7 +337,7 @@ fn render_content(
     );
     let header_height = if has_detail {
         if area.height < 16 { 5 } else { 10 }
-    } else if matches!(state.page.route, Route::Search | Route::Library) {
+    } else if matches!(state.page.route, Route::Search | Route::Library | Route::Settings) {
         4
     } else {
         3
@@ -412,30 +412,48 @@ fn render_content(
             let duration =
                 item.duration_ms.map_or_else(String::new, |ms| format!("  {}", clock(ms)));
             let is_liked = marker == "♥";
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {marker} "),
-                    Style::default().fg(if is_liked {
-                        Color::Rgb(255, 120, 150)
-                    } else if item.available {
-                        PEACH
-                    } else {
-                        MUTED
-                    }),
-                ),
-                Span::styled(
-                    if section.is_empty() { String::new() } else { format!("{section} · ") },
-                    Style::default().fg(MUTED),
-                ),
-                Span::styled(
-                    item.title.clone(),
-                    Style::default().fg(if item.available { Color::White } else { MUTED }),
-                ),
-                Span::styled(
-                    format!(" — {}{duration}{unavailable}", item.subtitle),
-                    Style::default().fg(MUTED),
-                ),
-            ]))
+            if state.page.route == Route::Settings && state.settings_tab == SettingsTab::Shortcuts {
+                ListItem::new(Line::from(vec![
+                    Span::styled(" › ", Style::default().fg(PEACH)),
+                    Span::styled(
+                        format!("{:<26}", item.title),
+                        Style::default().fg(if item.available { Color::White } else { MUTED }),
+                    ),
+                    Span::styled(
+                        item.subtitle.clone(),
+                        Style::default().fg(if item.subtitle == "(unbound)" {
+                            MUTED
+                        } else {
+                            PEACH
+                        }),
+                    ),
+                ]))
+            } else {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!(" {marker} "),
+                        Style::default().fg(if is_liked {
+                            Color::Rgb(255, 120, 150)
+                        } else if item.available {
+                            PEACH
+                        } else {
+                            MUTED
+                        }),
+                    ),
+                    Span::styled(
+                        if section.is_empty() { String::new() } else { format!("{section} · ") },
+                        Style::default().fg(MUTED),
+                    ),
+                    Span::styled(
+                        item.title.clone(),
+                        Style::default().fg(if item.available { Color::White } else { MUTED }),
+                    ),
+                    Span::styled(
+                        format!(" — {}{duration}{unavailable}", item.subtitle),
+                        Style::default().fg(MUTED),
+                    ),
+                ]))
+            }
         })
         .collect::<Vec<_>>();
     let visible_rows =
@@ -587,6 +605,31 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
                     Style::default().fg(MUTED),
                 ),
             ]));
+        }
+        Route::Settings => {
+            let general_style = if state.settings_tab == SettingsTab::General {
+                Style::default().bg(LAVENDER).fg(INK)
+            } else {
+                Style::default().fg(MUTED)
+            };
+            let shortcuts_style = if state.settings_tab == SettingsTab::Shortcuts {
+                Style::default().bg(LAVENDER).fg(INK)
+            } else {
+                Style::default().fg(MUTED)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(" General ", general_style),
+                Span::raw(" "),
+                Span::styled(" Shortcuts ", shortcuts_style),
+            ]));
+            hits.add(
+                Rect { x: area.x + padding, y: area.y + 1, width: 9, height: 1 },
+                HitTarget::SettingsTab(SettingsTab::General),
+            );
+            hits.add(
+                Rect { x: area.x + padding + 10, y: area.y + 1, width: 11, height: 1 },
+                HitTarget::SettingsTab(SettingsTab::Shortcuts),
+            );
         }
         _ => {}
     }
@@ -1549,6 +1592,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
             centered(55, height, frame.area())
         }
         Overlay::RenamePlaylist { .. } => centered(50, 7, frame.area()),
+        Overlay::ShortcutCapture { .. } => centered(56, 9, frame.area()),
         _ => centered(46, 13, frame.area()),
     };
     frame.render_widget(Clear, area);
@@ -1699,6 +1743,59 @@ fn render_overlay(frame: &mut Frame<'_>, state: &AppState, hits: &mut HitMap) {
             ])
             .block(focus_block(" Rename Playlist · Enter submits · Esc cancels ", true));
             frame.render_widget(p, area);
+        }
+        Overlay::ShortcutCapture { action, conflict: Some((key, conflicting_action)) } => {
+            let lines = vec![
+                Line::from(Span::styled(
+                    format!(" Key '{}' is already bound to:", key.to_canonical()),
+                    Style::default().fg(MUTED),
+                )),
+                Line::from(Span::styled(
+                    format!("   {}", conflicting_action.display_name()),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!(" Reassign to {}?", action.display_name()),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    " Enter reassigns · Esc cancels",
+                    Style::default().fg(PEACH),
+                )),
+            ];
+            frame.render_widget(
+                Paragraph::new(lines).block(focus_block(" Shortcut Conflict ", true)),
+                area,
+            );
+        }
+        Overlay::ShortcutCapture { action, conflict: None } => {
+            let current = state.shortcuts.list_label(*action, ", ");
+            let lines = vec![
+                Line::from(Span::styled(
+                    format!(" Action: {}", action.display_name()),
+                    Style::default().fg(PEACH).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    format!(" Current: {current}"),
+                    Style::default().fg(MUTED),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    " Press a key combination to assign…",
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    " Esc cancels · Delete unbinds",
+                    Style::default().fg(MUTED),
+                )),
+            ];
+            frame.render_widget(
+                Paragraph::new(lines).block(focus_block(" Assign Shortcut ", true)),
+                area,
+            );
         }
         Overlay::DevicePicker => frame.render_widget(
             Paragraph::new(

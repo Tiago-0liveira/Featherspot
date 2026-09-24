@@ -3,10 +3,10 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::shortcuts::ShortcutAction;
+use crate::shortcuts::{KeyBinding, ShortcutAction};
 use crate::state::{
     AppState, BrowseItem, ContextAction, EntityKind, FocusRegion, LibraryTab, Notice, NoticeKind,
-    Overlay, PageState, Route, SearchFilter, actions_for,
+    Overlay, PageState, Route, SearchFilter, Section, SettingsTab, actions_for,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +76,7 @@ pub enum Action {
 pub enum HitTarget {
     Sidebar(usize),
     TopNav(Route),
+    SettingsTab(SettingsTab),
     PlayerArtist { title: String, uri: String },
     PlayerAlbum { title: String, uri: String },
     PlayerDevice,
@@ -135,8 +136,71 @@ impl HitMap {
     }
 }
 
+fn handle_shortcut_capture_key(
+    state: &mut AppState,
+    action: ShortcutAction,
+    conflict: Option<(KeyBinding, ShortcutAction)>,
+    key: KeyEvent,
+) -> Vec<Effect> {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        state.quit = true;
+        return Vec::new();
+    }
+    if let Some((new_binding, _)) = conflict {
+        match key.code {
+            KeyCode::Enter => {
+                state.shortcuts.force_assign(action, new_binding);
+                state.overlay = None;
+                refresh_settings_page(state);
+                vec![Effect::SaveSettings]
+            }
+            KeyCode::Esc => {
+                state.overlay = None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                state.overlay = None;
+                Vec::new()
+            }
+            KeyCode::Delete => {
+                state.shortcuts.remove_binding(action);
+                state.overlay = None;
+                refresh_settings_page(state);
+                vec![Effect::SaveSettings]
+            }
+            KeyCode::Modifier(_) => Vec::new(),
+            _ => {
+                let new_binding = KeyBinding::from_event(&key);
+                if state.shortcuts.get_bindings(action).contains(&new_binding) {
+                    state.overlay = None;
+                    return Vec::new();
+                }
+                if let Some(conflicting) = state.shortcuts.find_conflict(action, &new_binding) {
+                    state.overlay = Some(Overlay::ShortcutCapture {
+                        action,
+                        conflict: Some((new_binding, conflicting)),
+                    });
+                    Vec::new()
+                } else {
+                    state.shortcuts.force_assign(action, new_binding);
+                    state.overlay = None;
+                    refresh_settings_page(state);
+                    vec![Effect::SaveSettings]
+                }
+            }
+        }
+    }
+}
+
 pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     state.startup_focus_pending = false;
+    if let Some(Overlay::ShortcutCapture { action, conflict }) = state.overlay.clone() {
+        return handle_shortcut_capture_key(state, action, conflict, key);
+    }
     // Exit precedes text entry and overlays. Lower-case q remains the Queue shortcut.
     let action = if state.shortcuts.is_quit(&key) {
         Action::Quit
@@ -271,6 +335,10 @@ pub fn dispatch_mouse(
                 }
                 Some(HitTarget::PlayerToggle) => Some(Action::TogglePlayback),
                 Some(HitTarget::TopNav(route)) => Some(Action::Navigate(route)),
+                Some(HitTarget::SettingsTab(tab)) => {
+                    switch_settings_tab(state, tab);
+                    return Vec::new();
+                }
                 Some(HitTarget::PlayerArtist { title, uri }) => {
                     Some(Action::Navigate(Route::Artist { title, uri }))
                 }
@@ -557,17 +625,24 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
             vec![Effect::Repeat(state.playback.repeat)]
         }
         Action::Enqueue => enqueue_selected(state),
-        Action::Refresh => vec![Effect::LoadPage {
-            route: state.page.route.clone(),
-            generation: state.generation,
-            offset: 0,
-            query: state.search_query.clone(),
-            tab: if state.page.route == Route::Library {
-                Some(state.page.library_tab)
+        Action::Refresh => {
+            if state.page.route == Route::Settings {
+                refresh_settings_page(state);
+                Vec::new()
             } else {
-                None
-            },
-        }],
+                vec![Effect::LoadPage {
+                    route: state.page.route.clone(),
+                    generation: state.generation,
+                    offset: 0,
+                    query: state.search_query.clone(),
+                    tab: if state.page.route == Route::Library {
+                        Some(state.page.library_tab)
+                    } else {
+                        None
+                    },
+                }]
+            }
+        }
         Action::PlayDetailContext => detail_context_uri(state).map_or_else(Vec::new, |uri| {
             vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
         }),
@@ -640,6 +715,11 @@ fn load_route(state: &mut AppState, route: Route) -> Vec<Effect> {
     }
 
     if is_fresh && route != Route::Queue && route != Route::Devices {
+        return Vec::new();
+    }
+
+    if route == Route::Settings {
+        refresh_settings_page(state);
         return Vec::new();
     }
 
@@ -741,6 +821,12 @@ fn cycle_local(state: &mut AppState, right: bool) -> Vec<Effect> {
             };
             state.page.search_filter = SearchFilter::ALL[index];
             state.page.cursor = crate::state::ListCursor::default();
+            Vec::new()
+        }
+        Route::Settings => {
+            let next_tab =
+                if right { state.settings_tab.next() } else { state.settings_tab.previous() };
+            switch_settings_tab(state, next_tab);
             Vec::new()
         }
         _ => Vec::new(),
@@ -1162,10 +1248,50 @@ fn activate_action_menu(
             });
             url.map_or_else(Vec::new, |url| vec![Effect::OpenExternal(url)])
         }
+        ContextAction::EditShortcut => {
+            if let Some(action_id) = item.id.strip_prefix("shortcut:")
+                && let Some(action) = ShortcutAction::from_id(action_id)
+            {
+                state.overlay = Some(Overlay::ShortcutCapture { action, conflict: None });
+            }
+            Vec::new()
+        }
+        ContextAction::RemoveShortcutBinding => {
+            if let Some(action_id) = item.id.strip_prefix("shortcut:")
+                && let Some(action) = ShortcutAction::from_id(action_id)
+            {
+                state.shortcuts.remove_binding(action);
+                refresh_settings_page(state);
+                return vec![Effect::SaveSettings];
+            }
+            Vec::new()
+        }
+        ContextAction::ResetShortcutToDefault => {
+            if let Some(action_id) = item.id.strip_prefix("shortcut:")
+                && let Some(action) = ShortcutAction::from_id(action_id)
+            {
+                state.shortcuts.restore_default(action);
+                refresh_settings_page(state);
+                return vec![Effect::SaveSettings];
+            }
+            Vec::new()
+        }
+        ContextAction::ResetAllShortcutsToDefault => {
+            state.shortcuts.restore_all_defaults();
+            refresh_settings_page(state);
+            vec![Effect::SaveSettings]
+        }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
+    if let Some(action_id) = id.strip_prefix("shortcut:")
+        && let Some(action) = ShortcutAction::from_id(action_id)
+    {
+        state.overlay = Some(Overlay::ShortcutCapture { action, conflict: None });
+        return Vec::new();
+    }
     match id {
         "artwork" => {
             state.artwork = match state.artwork {
@@ -1263,6 +1389,108 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
         state.page_cache.insert(Route::Settings.key(), (state.page.clone(), Instant::now()));
     }
     vec![Effect::SaveSettings]
+}
+
+fn setting_item(id: &str, title: &str) -> BrowseItem {
+    let mut item = BrowseItem::message(id, title);
+    item.kind = EntityKind::Action;
+    item.available = true;
+    item
+}
+
+#[must_use]
+pub fn general_settings_sections(state: &AppState) -> Vec<Section> {
+    vec![Section {
+        title: "Terminal".into(),
+        items: vec![
+            setting_item("artwork", &format!("Artwork: {:?}", state.artwork)),
+            setting_item(
+                "artwork-under-overlays",
+                &format!(
+                    "Artwork behind menus: {}",
+                    if state.artwork_under_overlays { "enabled" } else { "disabled" }
+                ),
+            ),
+            setting_item(
+                "mouse",
+                &format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" }),
+            ),
+            setting_item(
+                "wide-queue",
+                &format!(
+                    "Wide-screen queue: {}",
+                    if state.wide_queue { "enabled" } else { "disabled" }
+                ),
+            ),
+            setting_item(
+                "side-player-height",
+                &if state.side_player_max_height == 0 {
+                    "Side player max height: Disabled".into()
+                } else {
+                    format!("Side player max height: {} rows", state.side_player_max_height)
+                },
+            ),
+            setting_item(
+                "side-player-width",
+                &format!("Side player min width: {} cols", state.side_player_min_width),
+            ),
+            setting_item(
+                "stacked-queue-height",
+                &if state.stacked_queue_min_height > 500 {
+                    "Stacked queue min height: Disabled".into()
+                } else {
+                    format!("Stacked queue min height: {} rows", state.stacked_queue_min_height)
+                },
+            ),
+            setting_item(
+                "wide-breakpoint",
+                &format!("Wide layout min width: {} cols", state.wide_breakpoint_width),
+            ),
+        ],
+    }]
+}
+
+#[must_use]
+pub fn shortcut_settings_sections(state: &AppState) -> Vec<Section> {
+    let mut items = Vec::new();
+    for &action in &ShortcutAction::ALL {
+        let mut item =
+            BrowseItem::message(format!("shortcut:{}", action.id()), action.display_name());
+        item.kind = EntityKind::Action;
+        item.subtitle = state.shortcuts.list_label(action, ", ");
+        item.metadata = format!("Scope: {}", action.scope());
+        item.available = true;
+        items.push(item);
+    }
+    vec![Section { title: "Keybindings".into(), items }]
+}
+
+pub fn refresh_settings_page(state: &mut AppState) {
+    if state.page.route != Route::Settings {
+        return;
+    }
+    state.page.title = "Settings".into();
+    state.page.subtitle = match state.settings_tab {
+        SettingsTab::General => "CLI appearance and interaction".into(),
+        SettingsTab::Shortcuts => "Configure keyboard shortcuts".into(),
+    };
+    state.page.sections = match state.settings_tab {
+        SettingsTab::General => general_settings_sections(state),
+        SettingsTab::Shortcuts => shortcut_settings_sections(state),
+    };
+    state.page.state = crate::state::LoadState::Ready;
+    let len = state.page.flattened().len();
+    if state.page.cursor.selected >= len {
+        state.page.cursor.selected = len.saturating_sub(1);
+    }
+    state.page_cache.insert(Route::Settings.key(), (state.page.clone(), Instant::now()));
+}
+
+pub fn switch_settings_tab(state: &mut AppState, tab: SettingsTab) {
+    state.settings_tab = tab;
+    state.page.settings_tab = tab;
+    state.page.cursor = crate::state::ListCursor::default();
+    refresh_settings_page(state);
 }
 
 fn enqueue_selected(state: &mut AppState) -> Vec<Effect> {
@@ -1860,6 +2088,7 @@ mod tests {
             state: LoadState::Ready,
             filter: String::new(),
             library_tab: LibraryTab::Albums,
+            settings_tab: SettingsTab::General,
             search_filter: SearchFilter::All,
             next_offset: None,
             loading_more: false,

@@ -1038,6 +1038,7 @@ fn process_page_response(mut page: crate::PageState, state: &mut AppState) -> Op
         }
         page.filter.clone_from(&state.page.filter);
         page.library_tab = state.page.library_tab;
+        page.settings_tab = state.page.settings_tab;
         page.search_filter = state.page.search_filter;
         let accepted = state.accept_page(page);
         if accepted
@@ -1054,40 +1055,55 @@ fn process_page_response(mut page: crate::PageState, state: &mut AppState) -> Op
 }
 
 fn update_settings_rows(page: &mut crate::PageState, state: &AppState) {
-    for item in page.sections.iter_mut().flat_map(|section| &mut section.items) {
-        item.title = match item.id.as_str() {
-            "artwork" => format!("Artwork: {:?}", state.artwork),
-            "artwork-under-overlays" => format!(
-                "Artwork behind menus: {}",
-                if state.artwork_under_overlays { "enabled" } else { "disabled" }
-            ),
-            "mouse" => format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" }),
-            "wide-queue" => format!(
-                "Wide-screen queue: {}",
-                if state.wide_queue { "enabled" } else { "disabled" }
-            ),
-            "side-player-height" => {
-                if state.side_player_max_height == 0 {
-                    "Side player max height: Disabled".into()
-                } else {
-                    format!("Side player max height: {} rows", state.side_player_max_height)
-                }
+    page.settings_tab = state.settings_tab;
+    match state.settings_tab {
+        crate::state::SettingsTab::General => {
+            page.subtitle = "CLI appearance and interaction".into();
+            for item in page.sections.iter_mut().flat_map(|section| &mut section.items) {
+                item.title = match item.id.as_str() {
+                    "artwork" => format!("Artwork: {:?}", state.artwork),
+                    "artwork-under-overlays" => format!(
+                        "Artwork behind menus: {}",
+                        if state.artwork_under_overlays { "enabled" } else { "disabled" }
+                    ),
+                    "mouse" => {
+                        format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" })
+                    }
+                    "wide-queue" => format!(
+                        "Wide-screen queue: {}",
+                        if state.wide_queue { "enabled" } else { "disabled" }
+                    ),
+                    "side-player-height" => {
+                        if state.side_player_max_height == 0 {
+                            "Side player max height: Disabled".into()
+                        } else {
+                            format!("Side player max height: {} rows", state.side_player_max_height)
+                        }
+                    }
+                    "side-player-width" => {
+                        format!("Side player min width: {} cols", state.side_player_min_width)
+                    }
+                    "stacked-queue-height" => {
+                        if state.stacked_queue_min_height > 500 {
+                            "Stacked queue min height: Disabled".into()
+                        } else {
+                            format!(
+                                "Stacked queue min height: {} rows",
+                                state.stacked_queue_min_height
+                            )
+                        }
+                    }
+                    "wide-breakpoint" => {
+                        format!("Wide layout min width: {} cols", state.wide_breakpoint_width)
+                    }
+                    _ => item.title.clone(),
+                };
             }
-            "side-player-width" => {
-                format!("Side player min width: {} cols", state.side_player_min_width)
-            }
-            "stacked-queue-height" => {
-                if state.stacked_queue_min_height > 500 {
-                    "Stacked queue min height: Disabled".into()
-                } else {
-                    format!("Stacked queue min height: {} rows", state.stacked_queue_min_height)
-                }
-            }
-            "wide-breakpoint" => {
-                format!("Wide layout min width: {} cols", state.wide_breakpoint_width)
-            }
-            _ => item.title.clone(),
-        };
+        }
+        crate::state::SettingsTab::Shortcuts => {
+            page.subtitle = "Configure keyboard shortcuts".into();
+            page.sections = crate::action::shortcut_settings_sections(state);
+        }
     }
 }
 

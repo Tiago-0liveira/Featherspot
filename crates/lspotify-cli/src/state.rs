@@ -100,6 +100,41 @@ impl LibraryTab {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Shortcuts,
+}
+
+impl SettingsTab {
+    pub const ALL: [Self; 2] = [Self::General, Self::Shortcuts];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Shortcuts => "Shortcuts",
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::General => Self::Shortcuts,
+            Self::Shortcuts => Self::General,
+        }
+    }
+
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::General => Self::Shortcuts,
+            Self::Shortcuts => Self::General,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchFilter {
     #[default]
     All,
@@ -295,6 +330,7 @@ pub struct PageState {
     pub state: LoadState,
     pub filter: String,
     pub library_tab: LibraryTab,
+    pub settings_tab: SettingsTab,
     pub search_filter: SearchFilter,
     pub next_offset: Option<u32>,
     pub loading_more: bool,
@@ -325,6 +361,7 @@ impl PageState {
             state: LoadState::Loading,
             filter: String::new(),
             library_tab: LibraryTab::LikedSongs,
+            settings_tab: SettingsTab::General,
             search_filter: SearchFilter::All,
             next_offset: None,
             loading_more: false,
@@ -434,6 +471,10 @@ pub enum ContextAction {
     RenamePlaylist,
     DeletePlaylist,
     OpenInSpotify,
+    EditShortcut,
+    RemoveShortcutBinding,
+    ResetShortcutToDefault,
+    ResetAllShortcutsToDefault,
 }
 
 impl ContextAction {
@@ -457,6 +498,10 @@ impl ContextAction {
             Self::RenamePlaylist => "Rename playlist",
             Self::DeletePlaylist => "Delete playlist",
             Self::OpenInSpotify => "Open in Spotify",
+            Self::EditShortcut => "Assign key…",
+            Self::RemoveShortcutBinding => "Remove binding",
+            Self::ResetShortcutToDefault => "Restore to default",
+            Self::ResetAllShortcutsToDefault => "Restore all shortcuts to defaults",
         }
     }
 }
@@ -464,12 +509,29 @@ impl ContextAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Overlay {
     Menu,
-    Help { query: String, editing: bool },
-    Actions { selected: usize, actions: Vec<ContextAction> },
+    Help {
+        query: String,
+        editing: bool,
+    },
+    Actions {
+        selected: usize,
+        actions: Vec<ContextAction>,
+    },
     Inspector,
     DevicePicker,
-    PlaylistPicker { selected: usize, playlists: Vec<BrowseItem>, pending_uri: String },
-    RenamePlaylist { playlist_id: String, name: String },
+    PlaylistPicker {
+        selected: usize,
+        playlists: Vec<BrowseItem>,
+        pending_uri: String,
+    },
+    RenamePlaylist {
+        playlist_id: String,
+        name: String,
+    },
+    ShortcutCapture {
+        action: crate::shortcuts::ShortcutAction,
+        conflict: Option<(crate::shortcuts::KeyBinding, crate::shortcuts::ShortcutAction)>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -491,6 +553,7 @@ pub struct Notice {
 pub struct AppState {
     pub page: PageState,
     pub library_tab: LibraryTab,
+    pub settings_tab: SettingsTab,
     pub history: Vec<PageState>,
     pub focus: FocusRegion,
     pub sidebar: ListCursor,
@@ -539,6 +602,7 @@ impl Default for AppState {
         Self {
             page: PageState::loading(Route::Home, 0),
             library_tab: LibraryTab::LikedSongs,
+            settings_tab: SettingsTab::General,
             history: Vec::new(),
             focus: FocusRegion::Content,
             sidebar: ListCursor::default(),
@@ -966,6 +1030,11 @@ pub fn actions_for(item: &BrowseItem, route: &Route, _state: &AppState) -> Vec<C
                 actions.push(ContextAction::Play);
             } else if item.id == "open-external" {
                 actions.push(ContextAction::OpenInSpotify);
+            } else if item.id.starts_with("shortcut:") {
+                actions.push(ContextAction::EditShortcut);
+                actions.push(ContextAction::RemoveShortcutBinding);
+                actions.push(ContextAction::ResetShortcutToDefault);
+                actions.push(ContextAction::ResetAllShortcutsToDefault);
             }
         }
         EntityKind::Message => {}
