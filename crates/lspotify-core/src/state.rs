@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -172,6 +173,8 @@ pub struct CliSettings {
     pub stacked_queue_min_height: u16,
     pub wide_breakpoint_width: u16,
     pub artwork_under_overlays: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keybindings: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for CliSettings {
@@ -185,6 +188,7 @@ impl Default for CliSettings {
             stacked_queue_min_height: 38,
             wide_breakpoint_width: 140,
             artwork_under_overlays: false,
+            keybindings: BTreeMap::new(),
         }
     }
 }
@@ -446,5 +450,27 @@ mod tests {
     fn default_cli_settings_has_artwork_under_overlays_disabled() {
         let settings = CliSettings::default();
         assert!(!settings.artwork_under_overlays);
+        assert!(settings.keybindings.is_empty());
+    }
+
+    #[test]
+    fn older_settings_json_deserializes_without_keybindings() {
+        let json = r#"{"artwork":"auto","mouse":true,"wide_queue":true}"#;
+        let cli: CliSettings = serde_json::from_str(json).unwrap();
+        assert!(cli.keybindings.is_empty());
+    }
+
+    #[test]
+    fn settings_round_trip_preserves_keybinding_overrides() {
+        let mut cli = CliSettings::default();
+        cli.keybindings.insert("quit".into(), vec!["Ctrl+X".into(), "Esc".into()]);
+        cli.keybindings.insert("toggle_playback".into(), vec!["p".into()]);
+
+        let serialized = serde_json::to_string(&cli).unwrap();
+        assert!(serialized.contains("Ctrl+X"));
+        assert!(serialized.contains("toggle_playback"));
+
+        let deserialized: CliSettings = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(cli, deserialized);
     }
 }

@@ -188,6 +188,7 @@ fn run() -> Result<()> {
         recent_searches: cached_session.recent_searches,
         ..AppState::default()
     };
+    state.shortcuts.load_overrides(&cli.keybindings);
     restore_cached_track(&mut state, cached_session.last_track);
     state.notice =
         Some(Notice { kind: NoticeKind::Success, text: format!("Signed in as {account}") });
@@ -311,6 +312,7 @@ fn run() -> Result<()> {
         side_player_min_width: state.side_player_min_width,
         stacked_queue_min_height: state.stacked_queue_min_height,
         wide_breakpoint_width: state.wide_breakpoint_width,
+        keybindings: state.shortcuts.to_overrides(),
     };
     let mut saved = session.settings.load()?;
     saved.cli = Some(settings);
@@ -1100,6 +1102,7 @@ fn save_cli_settings(session: &Session, state: &AppState) -> Result<()> {
         side_player_min_width: state.side_player_min_width,
         stacked_queue_min_height: state.stacked_queue_min_height,
         wide_breakpoint_width: state.wide_breakpoint_width,
+        keybindings: state.shortcuts.to_overrides(),
     });
     session.settings.save(&saved)
 }
