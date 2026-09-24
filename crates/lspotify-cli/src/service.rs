@@ -252,6 +252,12 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
         Effect::OpenExternal(_) | Effect::SaveSettings => {
             ServiceResponse::Command { effect, result: Ok(()) }
         }
+        Effect::WarmLikedSongs => {
+            match load_page(api, token, Route::Library, 0, 0, "", Some(LibraryTab::LikedSongs)) {
+                Ok(page) => ServiceResponse::Page(page),
+                Err(error) => ServiceResponse::Command { effect, result: Err(error) },
+            }
+        }
     }
 }
 

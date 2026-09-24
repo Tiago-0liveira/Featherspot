@@ -370,34 +370,9 @@ fn handle_response(
     fast_polls: &mut FastPollTracker,
 ) -> Result<()> {
     match response {
-        ServiceResponse::Page(mut page) => {
-            if page.generation != state.generation || page.route.key() != state.page.route.key() {
-                return Ok(());
-            }
-            if state.page.loading_more {
-                for incoming in page.sections.drain(..) {
-                    if let Some(existing) = state
-                        .page
-                        .sections
-                        .iter_mut()
-                        .find(|section| section.title == incoming.title)
-                    {
-                        existing.items.extend(incoming.items);
-                    } else {
-                        state.page.sections.push(incoming);
-                    }
-                }
-                state.page.next_offset = page.next_offset;
-                state.page.loading_more = false;
-                state.page.state = page.state;
-            } else {
-                if page.route == Route::Settings {
-                    update_settings_rows(&mut page, state);
-                }
-                page.filter.clone_from(&state.page.filter);
-                page.library_tab = state.page.library_tab;
-                page.search_filter = state.page.search_filter;
-                state.accept_page(page);
+        ServiceResponse::Page(page) => {
+            if let Some(effect) = process_page_response(page, state) {
+                let _ = worker.send(effect);
             }
         }
         ServiceResponse::Playback(playback) => {
@@ -886,6 +861,54 @@ mod fast_poll_tests {
     }
 }
 
+#[cfg(test)]
+mod page_response_tests {
+    use super::*;
+
+    #[test]
+    fn initial_home_response_enqueues_warm_liked_songs() {
+        let mut state = AppState::default();
+        let mut home_page = crate::PageState::loading(Route::Home, 0);
+        home_page.state = LoadState::Ready;
+        let effect = process_page_response(home_page, &mut state);
+        assert_eq!(effect, Some(Effect::WarmLikedSongs));
+        assert!(state.liked_songs_warmed);
+    }
+
+    #[test]
+    fn warm_liked_songs_response_populates_cache_without_disrupting_home() {
+        let mut state = AppState::default();
+        let mut liked_page = crate::PageState::loading(Route::Library, 0);
+        liked_page.state = LoadState::Ready;
+        liked_page.library_tab = crate::LibraryTab::LikedSongs;
+        liked_page.sections = vec![crate::state::Section {
+            title: "Liked Songs".into(),
+            items: vec![crate::BrowseItem::message("track-1", "Liked 1")],
+        }];
+
+        let effect = process_page_response(liked_page, &mut state);
+        assert_eq!(effect, None);
+        assert_eq!(state.page.route, Route::Home);
+        assert!(state.page_cache.contains_key("library:liked"));
+    }
+
+    #[test]
+    fn warm_prefetch_does_not_replace_or_delay_foreground_navigation() {
+        let mut state = AppState::default();
+        state.navigate(Route::Search);
+        assert_eq!(state.page.route, Route::Search);
+
+        let mut liked_page = crate::PageState::loading(Route::Library, 0);
+        liked_page.state = LoadState::Ready;
+        liked_page.library_tab = crate::LibraryTab::LikedSongs;
+
+        let effect = process_page_response(liked_page, &mut state);
+        assert_eq!(effect, None);
+        assert_eq!(state.page.route, Route::Search);
+        assert!(state.page_cache.contains_key("library:liked"));
+    }
+}
+
 fn restore_cached_track(state: &mut AppState, track: Option<PersistedTrack>) {
     let Some(track) = track else { return };
     state.playback.track_uri = Some(track.uri);
@@ -968,6 +991,54 @@ fn command_success(effect: &Effect) -> String {
         Effect::RemoveFromPlaylist { .. } => "Removed track from playlist.".into(),
         Effect::RenamePlaylist { new_name, .. } => format!("Renamed playlist to \"{new_name}\"."),
         _ => "Spotify updated.".into(),
+    }
+}
+
+fn process_page_response(mut page: crate::PageState, state: &mut AppState) -> Option<Effect> {
+    if page.route == Route::Library
+        && page.cache_key() == "library:liked"
+        && (state.page.route != Route::Library || page.generation != state.generation)
+    {
+        if page.state == LoadState::Ready || matches!(page.state, LoadState::Partial(_)) {
+            state.page_cache.insert(page.cache_key(), (page, Instant::now()));
+        }
+        return None;
+    }
+    if page.generation != state.generation || page.route.key() != state.page.route.key() {
+        return None;
+    }
+    if state.page.loading_more {
+        for incoming in page.sections.drain(..) {
+            if let Some(existing) =
+                state.page.sections.iter_mut().find(|section| section.title == incoming.title)
+            {
+                existing.items.extend(incoming.items);
+            } else {
+                state.page.sections.push(incoming);
+            }
+        }
+        state.page.next_offset = page.next_offset;
+        state.page.loading_more = false;
+        state.page.state = page.state;
+        None
+    } else {
+        if page.route == Route::Settings {
+            update_settings_rows(&mut page, state);
+        }
+        page.filter.clone_from(&state.page.filter);
+        page.library_tab = state.page.library_tab;
+        page.search_filter = state.page.search_filter;
+        let accepted = state.accept_page(page);
+        if accepted
+            && state.page.route == Route::Home
+            && !state.liked_songs_warmed
+            && !state.page_cache.contains_key("library:liked")
+        {
+            state.liked_songs_warmed = true;
+            Some(Effect::WarmLikedSongs)
+        } else {
+            None
+        }
     }
 }
 

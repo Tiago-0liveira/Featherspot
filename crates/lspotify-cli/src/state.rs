@@ -529,6 +529,7 @@ pub struct AppState {
     pub recent_searches: Vec<String>,
     pub page_cache: HashMap<String, (PageState, Instant)>,
     pub startup_focus_pending: bool,
+    pub liked_songs_warmed: bool,
 }
 
 impl Default for AppState {
@@ -570,6 +571,7 @@ impl Default for AppState {
             recent_searches: Vec::new(),
             page_cache: HashMap::new(),
             startup_focus_pending: true,
+            liked_songs_warmed: false,
         }
     }
 }
@@ -667,6 +669,7 @@ impl AppState {
         if let Some((cached, _)) = self.page_cache.get(&cache_key) {
             let mut page = cached.clone();
             page.generation = self.generation;
+            page.library_tab = self.library_tab;
             self.page = page;
         } else {
             let mut page = PageState::loading(route, self.generation);
