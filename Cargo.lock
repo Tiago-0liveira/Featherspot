@@ -3820,7 +3820,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lspotify-cli"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "crossterm",
  "image",
@@ -3842,7 +3842,7 @@ dependencies = [
 
 [[package]]
 name = "lspotify-core"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "serde",
  "thiserror 2.0.16",
@@ -3850,7 +3850,7 @@ dependencies = [
 
 [[package]]
 name = "lspotify-platform"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "keyring",
  "lspotify-core",
@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "lspotify-playback"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "lspotify-core",
  "serde",
@@ -3873,7 +3873,7 @@ dependencies = [
 
 [[package]]
 name = "lspotify-player-host"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "gpui",
  "lspotify-core",
@@ -3884,7 +3884,7 @@ dependencies = [
 
 [[package]]
 name = "lspotify-spotify"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "base64",
  "lspotify-core",
@@ -3898,7 +3898,7 @@ dependencies = [
 
 [[package]]
 name = "lspotify-storage"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "lspotify-core",
  "rusqlite",

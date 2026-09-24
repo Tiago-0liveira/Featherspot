@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     thread,
@@ -46,6 +46,7 @@ pub struct ServiceHandle {
     responses: Receiver<ServiceResponse>,
     worker: Option<thread::JoinHandle<()>>,
     latest_browse_generation: Arc<AtomicU64>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl ServiceHandle {
@@ -55,21 +56,42 @@ impl ServiceHandle {
     /// Returns an error if the HTTP client or worker thread cannot be created.
     pub fn start(access_token: String) -> Result<Self> {
         let api = SpotifyWebApi::new()?;
+        Self::start_with_performer(access_token, move |token, effect| perform(&api, token, effect))
+    }
+
+    pub(crate) fn start_with_performer<F>(access_token: String, performer: F) -> Result<Self>
+    where
+        F: FnMut(&str, Effect) -> ServiceResponse + Send + 'static,
+    {
+        Self::start_with_performer_and_response_capacity(access_token, 64, performer)
+    }
+
+    pub(crate) fn start_with_performer_and_response_capacity<F>(
+        access_token: String,
+        response_capacity: usize,
+        performer: F,
+    ) -> Result<Self>
+    where
+        F: FnMut(&str, Effect) -> ServiceResponse + Send + 'static,
+    {
         let (priority_tx, priority_rx) = mpsc::sync_channel(64);
         let (browse_tx, browse_rx) = mpsc::sync_channel(8);
-        let (response_tx, response_rx) = mpsc::sync_channel(64);
+        let (response_tx, response_rx) = mpsc::sync_channel(response_capacity);
         let latest_browse_generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&latest_browse_generation);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("lspotify-spotify".into())
             .spawn(move || {
                 worker_loop(
-                    api,
+                    performer,
                     access_token,
                     &priority_rx,
                     &browse_rx,
                     &response_tx,
                     &worker_generation,
+                    &worker_shutdown,
                 );
             })
             .map_err(|error| {
@@ -84,6 +106,7 @@ impl ServiceHandle {
             responses: response_rx,
             worker: Some(worker),
             latest_browse_generation,
+            shutdown,
         })
     }
 
@@ -92,6 +115,9 @@ impl ServiceHandle {
     /// # Errors
     /// Returns an error if the bounded queue is full or the worker stopped.
     pub fn send(&self, effect: Effect) -> Result<()> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(AppError::new(ErrorKind::Unavailable, "worker is shutting down"));
+        }
         if let Effect::LoadPage { generation, .. } = &effect {
             self.latest_browse_generation.fetch_max(*generation, Ordering::Release);
         }
@@ -129,38 +155,66 @@ impl ServiceHandle {
     /// # Errors
     /// Returns an error if the worker stopped.
     pub fn update_token(&self, token: String) -> Result<()> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(AppError::new(ErrorKind::Unavailable, "worker is shutting down"));
+        }
         self.priority.send(Request::Token(token)).map_err(channel_error)
     }
+
     pub fn try_recv(&self) -> Option<ServiceResponse> {
         self.responses.try_recv().ok()
     }
+
     pub fn latest_browse_generation(&self) -> u64 {
         self.latest_browse_generation.load(Ordering::Acquire)
     }
+
     pub fn set_latest_browse_generation(&self, generation: u64) {
         self.latest_browse_generation.store(generation, Ordering::Release);
     }
-}
 
-impl Drop for ServiceHandle {
-    fn drop(&mut self) {
-        let _ = self.priority.send(Request::Shutdown);
+    /// Requests shutdown of the worker thread without blocking.
+    pub fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = self.priority.try_send(Request::Shutdown);
+    }
+
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn join_worker(&mut self) {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
 }
 
+impl Drop for ServiceHandle {
+    fn drop(&mut self) {
+        self.request_shutdown();
+        drop(self.worker.take());
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
-fn worker_loop(
-    api: SpotifyWebApi,
+fn worker_loop<F>(
+    mut performer: F,
     mut token: String,
     priority: &Receiver<Request>,
     browse: &Receiver<Request>,
     responses: &SyncSender<ServiceResponse>,
     latest_browse_generation: &AtomicU64,
-) {
+    shutdown: &AtomicBool,
+) where
+    F: FnMut(&str, Effect) -> ServiceResponse,
+{
     loop {
+        if shutdown.load(Ordering::Acquire) {
+            break;
+        }
         let request = match priority.try_recv() {
             Ok(request) => request,
             Err(TryRecvError::Disconnected) => break,
@@ -170,6 +224,9 @@ fn worker_loop(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             },
         };
+        if shutdown.load(Ordering::Acquire) {
+            break;
+        }
         match request {
             Request::Shutdown => break,
             Request::Token(value) => token = value,
@@ -180,9 +237,18 @@ fn worker_loop(
                 ) {
                     continue;
                 }
-                let response = perform(&api, &token, effect);
-                if responses.send(response).is_err() {
+                let response = performer(&token, effect);
+                if shutdown.load(Ordering::Acquire) {
                     break;
+                }
+                match responses.try_send(response) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        if shutdown.load(Ordering::Acquire) {
+                            break;
+                        }
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => break,
                 }
             }
         }
@@ -873,5 +939,234 @@ mod tests {
         search_page.state = LoadState::Ready;
         assert!(state.accept_page(search_page));
         assert_eq!(state.page.route, Route::Search);
+    }
+
+    #[test]
+    fn drop_service_handle_does_not_wait_for_in_flight_request() {
+        use std::time::Instant;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle = ServiceHandle::start_with_performer("dummy".into(), move |_token, effect| {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            ServiceResponse::Command { effect, result: Ok(()) }
+        })
+        .unwrap();
+
+        // Queue a priority request that gets picked up by the worker
+        handle.send(Effect::RefreshPlayback).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).expect("performer should be running");
+
+        // The request is currently blocked on release_rx (simulating slow network / 20s timeout).
+        // Dropping the handle must NOT wait for release_rx / the in-flight request.
+        let start = Instant::now();
+        drop(handle);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "ServiceHandle::drop must return immediately without waiting for worker thread, took {elapsed:?}"
+        );
+
+        // Clean up the detached thread
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn request_shutdown_does_not_wait_for_in_flight_request() {
+        use std::time::Instant;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle = ServiceHandle::start_with_performer("dummy".into(), move |_token, effect| {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            ServiceResponse::Command { effect, result: Ok(()) }
+        })
+        .unwrap();
+
+        handle.send(Effect::RefreshPlayback).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).expect("performer should be running");
+
+        let start = Instant::now();
+        handle.request_shutdown();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "ServiceHandle::request_shutdown must return immediately, took {elapsed:?}"
+        );
+        assert!(handle.is_shutting_down());
+
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn shutdown_succeeds_when_response_channel_is_full_and_consumer_stops_reading() {
+        // Channel capacity = 1
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle = ServiceHandle::start_with_performer_and_response_capacity(
+            "dummy".into(),
+            1,
+            move |_token, effect| {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                ServiceResponse::Command { effect, result: Ok(()) }
+            },
+        )
+        .unwrap();
+
+        handle.send(Effect::RefreshPlayback).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        // The consumer NEVER reads responses.
+        // Request shutdown while the worker is blocked in perform.
+        handle.request_shutdown();
+
+        // Release the performer so it attempts to deliver its response to the full channel
+        release_tx.send(()).unwrap();
+
+        // The worker must exit cleanly without deadlocking on responses.send()
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut worker_handle = handle;
+        thread::spawn(move || {
+            worker_handle.join_worker();
+            done_tx.send(()).unwrap();
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(500)).is_ok(),
+            "Worker must terminate cleanly when consumer is not reading responses"
+        );
+    }
+
+    #[test]
+    fn worker_discards_in_flight_response_after_shutdown_requested() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let mut handle =
+            ServiceHandle::start_with_performer("dummy".into(), move |_token, effect| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                ServiceResponse::Command { effect, result: Ok(()) }
+            })
+            .unwrap();
+
+        handle.send(Effect::RefreshPlayback).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        // Request shutdown while request is running
+        handle.request_shutdown();
+
+        // Now finish the request
+        release_tx.send(()).unwrap();
+
+        // Join worker to verify it exited
+        handle.join_worker();
+
+        // Since shutdown was set before request finished, the response must have been discarded
+        assert!(handle.try_recv().is_none(), "Response should be discarded when shutting down");
+    }
+
+    #[test]
+    fn quitting_with_in_flight_page_load_returns_immediately() {
+        use std::time::Instant;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle = ServiceHandle::start_with_performer("dummy".into(), move |_token, effect| {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            ServiceResponse::Command { effect, result: Ok(()) }
+        })
+        .unwrap();
+
+        handle
+            .send(Effect::LoadPage {
+                route: Route::Home,
+                generation: 1,
+                offset: 0,
+                query: String::new(),
+                tab: None,
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).expect("page load in flight");
+
+        let start = Instant::now();
+        handle.request_shutdown();
+        drop(handle);
+        assert!(
+            start.elapsed() < Duration::from_millis(150),
+            "Page load in flight must not delay shutdown"
+        );
+
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn quitting_with_in_flight_warm_liked_songs_returns_immediately() {
+        use std::time::Instant;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle = ServiceHandle::start_with_performer("dummy".into(), move |_token, effect| {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            ServiceResponse::Command { effect, result: Ok(()) }
+        })
+        .unwrap();
+
+        handle.send(Effect::WarmLikedSongs).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).expect("warm liked songs in flight");
+
+        let start = Instant::now();
+        handle.request_shutdown();
+        drop(handle);
+        assert!(
+            start.elapsed() < Duration::from_millis(150),
+            "WarmLikedSongs in flight must not delay shutdown"
+        );
+
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn offline_unresponsive_spotify_simulation_does_not_hang_shutdown() {
+        use std::time::Instant;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        // Simulate an unresponsive Spotify API call that would block up to 20 seconds
+        let handle = ServiceHandle::start_with_performer("dummy".into(), move |_token, effect| {
+            started_tx.send(()).unwrap();
+            // Sleep / wait on release simulating network hang
+            let _ = release_rx.recv_timeout(Duration::from_secs(20));
+            ServiceResponse::Command { effect, result: Ok(()) }
+        })
+        .unwrap();
+
+        handle.send(Effect::RefreshPlayback).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).expect("request started");
+
+        let start = Instant::now();
+        handle.request_shutdown();
+        drop(handle);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "Unresponsive Spotify network request must not block exit, took {elapsed:?}"
+        );
+
+        release_tx.send(()).unwrap();
     }
 }
