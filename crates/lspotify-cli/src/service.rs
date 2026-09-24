@@ -1,5 +1,9 @@
 use std::{
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError},
+    },
     thread,
     time::Duration,
 };
@@ -41,6 +45,7 @@ pub struct ServiceHandle {
     browse: SyncSender<Request>,
     responses: Receiver<ServiceResponse>,
     worker: Option<thread::JoinHandle<()>>,
+    latest_browse_generation: Arc<AtomicU64>,
 }
 
 impl ServiceHandle {
@@ -53,10 +58,19 @@ impl ServiceHandle {
         let (priority_tx, priority_rx) = mpsc::sync_channel(64);
         let (browse_tx, browse_rx) = mpsc::sync_channel(8);
         let (response_tx, response_rx) = mpsc::sync_channel(64);
+        let latest_browse_generation = Arc::new(AtomicU64::new(0));
+        let worker_generation = Arc::clone(&latest_browse_generation);
         let worker = thread::Builder::new()
             .name("lspotify-spotify".into())
             .spawn(move || {
-                worker_loop(api, access_token, &priority_rx, &browse_rx, &response_tx);
+                worker_loop(
+                    api,
+                    access_token,
+                    &priority_rx,
+                    &browse_rx,
+                    &response_tx,
+                    &worker_generation,
+                );
             })
             .map_err(|error| {
                 AppError::new(
@@ -69,6 +83,7 @@ impl ServiceHandle {
             browse: browse_tx,
             responses: response_rx,
             worker: Some(worker),
+            latest_browse_generation,
         })
     }
 
@@ -77,6 +92,9 @@ impl ServiceHandle {
     /// # Errors
     /// Returns an error if the bounded queue is full or the worker stopped.
     pub fn send(&self, effect: Effect) -> Result<()> {
+        if let Effect::LoadPage { generation, .. } = &effect {
+            self.latest_browse_generation.fetch_max(*generation, Ordering::Release);
+        }
         let priority = matches!(
             effect,
             Effect::TogglePlayback
@@ -116,6 +134,12 @@ impl ServiceHandle {
     pub fn try_recv(&self) -> Option<ServiceResponse> {
         self.responses.try_recv().ok()
     }
+    pub fn latest_browse_generation(&self) -> u64 {
+        self.latest_browse_generation.load(Ordering::Acquire)
+    }
+    pub fn set_latest_browse_generation(&self, generation: u64) {
+        self.latest_browse_generation.store(generation, Ordering::Release);
+    }
 }
 
 impl Drop for ServiceHandle {
@@ -134,6 +158,7 @@ fn worker_loop(
     priority: &Receiver<Request>,
     browse: &Receiver<Request>,
     responses: &SyncSender<ServiceResponse>,
+    latest_browse_generation: &AtomicU64,
 ) {
     loop {
         let request = match priority.try_recv() {
@@ -149,12 +174,25 @@ fn worker_loop(
             Request::Shutdown => break,
             Request::Token(value) => token = value,
             Request::Effect(effect) => {
+                if is_obsolete_browse_effect(
+                    &effect,
+                    latest_browse_generation.load(Ordering::Acquire),
+                ) {
+                    continue;
+                }
                 let response = perform(&api, &token, effect);
                 if responses.send(response).is_err() {
                     break;
                 }
             }
         }
+    }
+}
+
+pub(crate) fn is_obsolete_browse_effect(effect: &Effect, latest_generation: u64) -> bool {
+    match effect {
+        Effect::LoadPage { generation, .. } => *generation < latest_generation,
+        _ => false,
     }
 }
 
@@ -251,6 +289,12 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
         }
         Effect::OpenExternal(_) | Effect::SaveSettings => {
             ServiceResponse::Command { effect, result: Ok(()) }
+        }
+        Effect::WarmLikedSongs => {
+            match load_page(api, token, Route::Library, 0, 0, "", Some(LibraryTab::LikedSongs)) {
+                Ok(page) => ServiceResponse::Page(page),
+                Err(error) => ServiceResponse::Command { effect, result: Err(error) },
+            }
         }
     }
 }
@@ -430,6 +474,7 @@ fn load_page(
                 title: "Terminal".into(),
                 items: vec![
                     setting_item("artwork", "Artwork: Auto / Blocks / Off"),
+                    setting_item("artwork-under-overlays", "Artwork behind menus: disabled"),
                     setting_item("mouse", "Mouse input: enabled"),
                     setting_item("wide-queue", "Wide-screen queue: enabled"),
                     setting_item("side-player-height", "Side player max height: 28 rows"),
@@ -766,5 +811,67 @@ mod tests {
         assert_eq!(page.external_url.as_deref(), Some("https://open.spotify.com/album/1"));
         assert!(!page.sections.iter().any(|s| s.title == "Actions"));
         assert_eq!(page.sections[0].title, "Tracks");
+    }
+
+    #[test]
+    fn rapid_navigation_skips_obsolete_browse_requests() {
+        let home_request = Effect::LoadPage {
+            route: Route::Home,
+            generation: 0,
+            offset: 0,
+            query: String::new(),
+            tab: None,
+        };
+        let library_request = Effect::LoadPage {
+            route: Route::Library,
+            generation: 1,
+            offset: 0,
+            query: String::new(),
+            tab: Some(LibraryTab::LikedSongs),
+        };
+        let search_request = Effect::LoadPage {
+            route: Route::Search,
+            generation: 2,
+            offset: 0,
+            query: "radiohead".into(),
+            tab: None,
+        };
+
+        assert!(is_obsolete_browse_effect(&home_request, 2));
+        assert!(is_obsolete_browse_effect(&library_request, 2));
+        assert!(!is_obsolete_browse_effect(&search_request, 2));
+
+        let search_page_2 = Effect::LoadPage {
+            route: Route::Search,
+            generation: 2,
+            offset: 50,
+            query: "radiohead".into(),
+            tab: None,
+        };
+        assert!(!is_obsolete_browse_effect(&search_page_2, 2));
+
+        assert!(!is_obsolete_browse_effect(&Effect::TogglePlayback, 2));
+        assert!(!is_obsolete_browse_effect(&Effect::RefreshPlayback, 2));
+        assert!(!is_obsolete_browse_effect(&Effect::RefreshQueue, 2));
+        assert!(!is_obsolete_browse_effect(&Effect::WarmLikedSongs, 2));
+    }
+
+    #[test]
+    fn already_running_request_rejected_by_state_generation_checks() {
+        let mut state = crate::AppState::default();
+        state.navigate(Route::Library);
+        state.navigate(Route::Search);
+        assert_eq!(state.generation, 2);
+        assert_eq!(state.page.route, Route::Search);
+
+        let mut late_library_page = PageState::loading(Route::Library, 1);
+        late_library_page.state = LoadState::Ready;
+        assert!(!state.accept_page(late_library_page));
+        assert_eq!(state.page.route, Route::Search);
+
+        let mut search_page = PageState::loading(Route::Search, 2);
+        search_page.state = LoadState::Ready;
+        assert!(state.accept_page(search_page));
+        assert_eq!(state.page.route, Route::Search);
     }
 }

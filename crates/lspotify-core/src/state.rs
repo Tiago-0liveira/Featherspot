@@ -171,6 +171,7 @@ pub struct CliSettings {
     pub side_player_min_width: u16,
     pub stacked_queue_min_height: u16,
     pub wide_breakpoint_width: u16,
+    pub artwork_under_overlays: bool,
 }
 
 impl Default for CliSettings {
@@ -183,6 +184,7 @@ impl Default for CliSettings {
             side_player_min_width: 100,
             stacked_queue_min_height: 38,
             wide_breakpoint_width: 140,
+            artwork_under_overlays: false,
         }
     }
 }
@@ -438,5 +440,11 @@ mod tests {
         assert_eq!(state.notifications.items.first().unwrap().message, "Notification 11");
         assert_eq!(state.notifications.items.last().unwrap().message, "Notification 60");
         assert_eq!(state.notifications.next_id, 60);
+    }
+
+    #[test]
+    fn default_cli_settings_has_artwork_under_overlays_disabled() {
+        let settings = CliSettings::default();
+        assert!(!settings.artwork_under_overlays);
     }
 }

@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 
 use crate::state::{
     AppState, BrowseItem, ContextAction, EntityKind, FocusRegion, LibraryTab, Notice, NoticeKind,
-    Overlay, Route, SearchFilter, actions_for,
+    Overlay, PageState, Route, SearchFilter, actions_for,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +31,7 @@ pub enum Effect {
     RemoveFromPlaylist { playlist_uri: String, track_uri: String },
     RenamePlaylist { playlist_id: String, new_name: String },
     LoadPlaylistsForPicker { pending_uri: String },
+    WarmLikedSongs,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,6 +135,7 @@ impl HitMap {
 }
 
 pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+    state.startup_focus_pending = false;
     // Exit precedes text entry and overlays. Lower-case q remains the Queue shortcut.
     let action = if matches!(key.code, KeyCode::Char('x' | 'Q'))
         || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::SHIFT))
@@ -236,6 +238,7 @@ pub fn dispatch_mouse(
     event: MouseEvent,
     now: Instant,
 ) -> Vec<Effect> {
+    state.startup_focus_pending = false;
     if !state.mouse {
         return Vec::new();
     }
@@ -688,9 +691,7 @@ fn cycle_local(state: &mut AppState, right: bool) -> Vec<Effect> {
                 current.checked_sub(1).unwrap_or(tabs.len() - 1)
             };
             let new_tab = tabs[next];
-            state.page.library_tab = new_tab;
             state.library_tab = new_tab;
-            state.page.cursor = crate::state::ListCursor::default();
 
             let cache_key = match new_tab {
                 LibraryTab::LikedSongs => "library:liked",
@@ -698,25 +699,37 @@ fn cycle_local(state: &mut AppState, right: bool) -> Vec<Effect> {
                 LibraryTab::Playlists => "library:playlists",
             };
 
-            if let Some((cached_page, cached_at)) = state.page_cache.get(cache_key)
-                && cached_at.elapsed() < Duration::from_secs(60)
-            {
-                state.page = cached_page.clone();
-                state.page.library_tab = new_tab;
-                return Vec::new();
+            if let Some((cached_page, cached_at)) = state.page_cache.get(cache_key) {
+                let is_fresh = cached_at.elapsed() < Duration::from_secs(60);
+                let mut page = cached_page.clone();
+                page.library_tab = new_tab;
+                if is_fresh {
+                    state.page = page;
+                    return Vec::new();
+                }
+                state.generation = state.generation.saturating_add(1);
+                page.generation = state.generation;
+                state.page = page;
+                vec![Effect::LoadPage {
+                    route: Route::Library,
+                    generation: state.generation,
+                    offset: 0,
+                    query: String::new(),
+                    tab: Some(new_tab),
+                }]
+            } else {
+                state.generation = state.generation.saturating_add(1);
+                let mut page = PageState::loading(Route::Library, state.generation);
+                page.library_tab = new_tab;
+                state.page = page;
+                vec![Effect::LoadPage {
+                    route: Route::Library,
+                    generation: state.generation,
+                    offset: 0,
+                    query: String::new(),
+                    tab: Some(new_tab),
+                }]
             }
-
-            state.generation = state.generation.saturating_add(1);
-            state.page.generation = state.generation;
-            state.page.sections = Vec::new();
-            state.page.state = crate::state::LoadState::Loading;
-            vec![Effect::LoadPage {
-                route: Route::Library,
-                generation: state.generation,
-                offset: 0,
-                query: String::new(),
-                tab: Some(new_tab),
-            }]
         }
         Route::Search => {
             let current = SearchFilter::ALL
@@ -1169,6 +1182,7 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
                 }
             }
         }
+        "artwork-under-overlays" => state.artwork_under_overlays = !state.artwork_under_overlays,
         "mouse" => state.mouse = !state.mouse,
         "wide-queue" => state.wide_queue = !state.wide_queue,
         "side-player-height" => {
@@ -1215,6 +1229,10 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
     {
         item.title = match id {
             "artwork" => format!("Artwork: {:?}", state.artwork),
+            "artwork-under-overlays" => format!(
+                "Artwork behind menus: {}",
+                if state.artwork_under_overlays { "enabled" } else { "disabled" }
+            ),
             "mouse" => format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" }),
             "wide-queue" => format!(
                 "Wide-screen queue: {}",
@@ -2315,5 +2333,191 @@ mod tests {
             }]
         );
         assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn user_interaction_clears_startup_focus_pending() {
+        let mut state = AppState::default();
+        assert!(state.startup_focus_pending);
+        let _ = dispatch_key(&mut state, KeyEvent::from(KeyCode::Char('k')));
+        assert!(!state.startup_focus_pending);
+
+        state.startup_focus_pending = true;
+        let mut hits = HitMap::default();
+        let mouse_event = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        };
+        let _ = dispatch_mouse(&mut state, &mut hits, mouse_event, Instant::now());
+        assert!(!state.startup_focus_pending);
+    }
+
+    #[test]
+    fn fresh_library_visit_loads_normally() {
+        let mut state = AppState::default();
+        let effects = load_route(&mut state, Route::Library);
+        assert_eq!(state.page.route, Route::Library);
+        assert_eq!(state.page.library_tab, LibraryTab::LikedSongs);
+        assert_eq!(state.page.state, crate::state::LoadState::Loading);
+        assert_eq!(
+            effects,
+            vec![Effect::LoadPage {
+                route: Route::Library,
+                generation: state.generation,
+                offset: 0,
+                query: String::new(),
+                tab: Some(LibraryTab::LikedSongs),
+            }]
+        );
+    }
+
+    #[test]
+    fn fresh_cached_library_tab_opens_immediately_without_another_loading_state() {
+        let mut state = AppState::default();
+        let mut cached_page = PageState::loading(Route::Library, 1);
+        cached_page.state = crate::state::LoadState::Ready;
+        cached_page.library_tab = LibraryTab::LikedSongs;
+        cached_page.sections = vec![crate::state::Section {
+            title: "Liked Songs".into(),
+            items: vec![BrowseItem::message("item-1", "Track 1")],
+        }];
+        state.page_cache.insert("library:liked".into(), (cached_page, Instant::now()));
+
+        let effects = load_route(&mut state, Route::Library);
+        assert_eq!(state.page.route, Route::Library);
+        assert_eq!(state.page.state, crate::state::LoadState::Ready);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn stale_cached_library_tab_opens_immediately_and_then_refreshes() {
+        let mut state = AppState::default();
+        let mut cached_page = PageState::loading(Route::Library, 1);
+        cached_page.state = crate::state::LoadState::Ready;
+        cached_page.library_tab = LibraryTab::LikedSongs;
+        cached_page.sections = vec![crate::state::Section {
+            title: "Liked Songs".into(),
+            items: vec![BrowseItem::message("item-1", "Track 1")],
+        }];
+        state.page_cache.insert(
+            "library:liked".into(),
+            (
+                cached_page,
+                Instant::now().checked_sub(Duration::from_secs(120)).unwrap_or_else(Instant::now),
+            ),
+        );
+
+        let effects = load_route(&mut state, Route::Library);
+        assert_eq!(state.page.route, Route::Library);
+        assert_eq!(state.page.state, crate::state::LoadState::Ready);
+        assert_eq!(
+            effects,
+            vec![Effect::LoadPage {
+                route: Route::Library,
+                generation: state.generation,
+                offset: 0,
+                query: String::new(),
+                tab: Some(LibraryTab::LikedSongs),
+            }]
+        );
+
+        let mut stale_albums = PageState::loading(Route::Library, 1);
+        stale_albums.state = crate::state::LoadState::Ready;
+        stale_albums.library_tab = LibraryTab::Albums;
+        stale_albums.sections = vec![crate::state::Section {
+            title: "Albums".into(),
+            items: vec![BrowseItem::message("album-1", "Album 1")],
+        }];
+        state.page_cache.insert(
+            "library:albums".into(),
+            (
+                stale_albums,
+                Instant::now().checked_sub(Duration::from_secs(120)).unwrap_or_else(Instant::now),
+            ),
+        );
+
+        let switch_effects = reduce(&mut state, Action::LocalRight);
+        assert_eq!(state.library_tab, LibraryTab::Albums);
+        assert_eq!(state.page.library_tab, LibraryTab::Albums);
+        assert_eq!(state.page.state, crate::state::LoadState::Ready);
+        assert_eq!(
+            switch_effects,
+            vec![Effect::LoadPage {
+                route: Route::Library,
+                generation: state.generation,
+                offset: 0,
+                query: String::new(),
+                tab: Some(LibraryTab::Albums),
+            }]
+        );
+    }
+
+    #[test]
+    fn switching_tabs_never_displays_content_from_wrong_library_tab() {
+        let mut state = AppState::default();
+        let mut liked_page = PageState::loading(Route::Library, 1);
+        liked_page.state = crate::state::LoadState::Ready;
+        liked_page.library_tab = LibraryTab::LikedSongs;
+        let mut liked_item = BrowseItem::message("track-1", "Liked Track 1");
+        liked_item.kind = EntityKind::Track;
+        liked_page.sections =
+            vec![crate::state::Section { title: "Liked Songs".into(), items: vec![liked_item] }];
+        state.page_cache.insert("library:liked".into(), (liked_page, Instant::now()));
+
+        let mut album_page = PageState::loading(Route::Library, 1);
+        album_page.state = crate::state::LoadState::Ready;
+        album_page.library_tab = LibraryTab::Albums;
+        let mut album_item = BrowseItem::message("album-1", "Album 1");
+        album_item.kind = EntityKind::Album;
+        album_page.sections =
+            vec![crate::state::Section { title: "Albums".into(), items: vec![album_item] }];
+        state.page_cache.insert("library:albums".into(), (album_page, Instant::now()));
+
+        load_route(&mut state, Route::Library);
+        assert_eq!(state.page.library_tab, LibraryTab::LikedSongs);
+        assert_eq!(state.page.flattened()[0].title, "Liked Track 1");
+
+        reduce(&mut state, Action::LocalRight);
+        assert_eq!(state.page.library_tab, LibraryTab::Albums);
+        assert_eq!(state.page.flattened()[0].title, "Album 1");
+    }
+
+    #[test]
+    fn activate_setting_toggles_artwork_behind_menus() {
+        let mut state = AppState::default();
+        assert!(!state.artwork_under_overlays);
+
+        state.page.sections = vec![crate::state::Section {
+            title: "Terminal".into(),
+            items: vec![crate::state::BrowseItem {
+                id: "artwork-under-overlays".into(),
+                kind: EntityKind::Action,
+                title: "Artwork behind menus: disabled".into(),
+                subtitle: String::new(),
+                metadata: String::new(),
+                uri: None,
+                external_url: None,
+                artwork_url: None,
+                artists: Vec::new(),
+                album: None,
+                duration_ms: None,
+                available: true,
+                saved: None,
+                context: None,
+                restricted: false,
+            }],
+        }];
+
+        let effects = activate_setting(&mut state, "artwork-under-overlays");
+        assert!(state.artwork_under_overlays);
+        assert_eq!(state.page.sections[0].items[0].title, "Artwork behind menus: enabled");
+        assert_eq!(effects, vec![Effect::SaveSettings]);
+
+        let effects2 = activate_setting(&mut state, "artwork-under-overlays");
+        assert!(!state.artwork_under_overlays);
+        assert_eq!(state.page.sections[0].items[0].title, "Artwork behind menus: disabled");
+        assert_eq!(effects2, vec![Effect::SaveSettings]);
     }
 }

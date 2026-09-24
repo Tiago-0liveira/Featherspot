@@ -174,6 +174,7 @@ fn run() -> Result<()> {
     let cached_session = session.cli_session.load();
     let mut state = AppState {
         artwork: cli.artwork,
+        artwork_under_overlays: cli.artwork_under_overlays,
         mouse: cli.mouse,
         wide_queue: cli.wide_queue,
         side_player_max_height: cli.side_player_max_height,
@@ -300,6 +301,7 @@ fn run() -> Result<()> {
     artwork.clear_placement();
     let settings = CliSettings {
         artwork: state.artwork,
+        artwork_under_overlays: state.artwork_under_overlays,
         mouse: state.mouse,
         wide_queue: state.wide_queue,
         side_player_max_height: state.side_player_max_height,
@@ -313,8 +315,11 @@ fn run() -> Result<()> {
     if let Err(error) = session.cli_session.save(&session_snapshot(&state)) {
         tracing::warn!(%error, "failed to persist CLI session state");
     }
+    terminal.restore();
     // Do not wait for the player-host process: terminal restoration must never depend on it.
     let _ = local_player.send(LocalPlayerCommand::Shutdown);
+    drop(local_player);
+    drop(worker);
     Ok(())
 }
 
@@ -370,34 +375,9 @@ fn handle_response(
     fast_polls: &mut FastPollTracker,
 ) -> Result<()> {
     match response {
-        ServiceResponse::Page(mut page) => {
-            if page.generation != state.generation || page.route.key() != state.page.route.key() {
-                return Ok(());
-            }
-            if state.page.loading_more {
-                for incoming in page.sections.drain(..) {
-                    if let Some(existing) = state
-                        .page
-                        .sections
-                        .iter_mut()
-                        .find(|section| section.title == incoming.title)
-                    {
-                        existing.items.extend(incoming.items);
-                    } else {
-                        state.page.sections.push(incoming);
-                    }
-                }
-                state.page.next_offset = page.next_offset;
-                state.page.loading_more = false;
-                state.page.state = page.state;
-            } else {
-                if page.route == Route::Settings {
-                    update_settings_rows(&mut page, state);
-                }
-                page.filter.clone_from(&state.page.filter);
-                page.library_tab = state.page.library_tab;
-                page.search_filter = state.page.search_filter;
-                state.accept_page(page);
+        ServiceResponse::Page(page) => {
+            if let Some(effect) = process_page_response(page, state) {
+                let _ = worker.send(effect);
             }
         }
         ServiceResponse::Playback(playback) => {
@@ -886,6 +866,54 @@ mod fast_poll_tests {
     }
 }
 
+#[cfg(test)]
+mod page_response_tests {
+    use super::*;
+
+    #[test]
+    fn initial_home_response_enqueues_warm_liked_songs() {
+        let mut state = AppState::default();
+        let mut home_page = crate::PageState::loading(Route::Home, 0);
+        home_page.state = LoadState::Ready;
+        let effect = process_page_response(home_page, &mut state);
+        assert_eq!(effect, Some(Effect::WarmLikedSongs));
+        assert!(state.liked_songs_warmed);
+    }
+
+    #[test]
+    fn warm_liked_songs_response_populates_cache_without_disrupting_home() {
+        let mut state = AppState::default();
+        let mut liked_page = crate::PageState::loading(Route::Library, 0);
+        liked_page.state = LoadState::Ready;
+        liked_page.library_tab = crate::LibraryTab::LikedSongs;
+        liked_page.sections = vec![crate::state::Section {
+            title: "Liked Songs".into(),
+            items: vec![crate::BrowseItem::message("track-1", "Liked 1")],
+        }];
+
+        let effect = process_page_response(liked_page, &mut state);
+        assert_eq!(effect, None);
+        assert_eq!(state.page.route, Route::Home);
+        assert!(state.page_cache.contains_key("library:liked"));
+    }
+
+    #[test]
+    fn warm_prefetch_does_not_replace_or_delay_foreground_navigation() {
+        let mut state = AppState::default();
+        state.navigate(Route::Search);
+        assert_eq!(state.page.route, Route::Search);
+
+        let mut liked_page = crate::PageState::loading(Route::Library, 0);
+        liked_page.state = LoadState::Ready;
+        liked_page.library_tab = crate::LibraryTab::LikedSongs;
+
+        let effect = process_page_response(liked_page, &mut state);
+        assert_eq!(effect, None);
+        assert_eq!(state.page.route, Route::Search);
+        assert!(state.page_cache.contains_key("library:liked"));
+    }
+}
+
 fn restore_cached_track(state: &mut AppState, track: Option<PersistedTrack>) {
     let Some(track) = track else { return };
     state.playback.track_uri = Some(track.uri);
@@ -971,10 +999,62 @@ fn command_success(effect: &Effect) -> String {
     }
 }
 
+fn process_page_response(mut page: crate::PageState, state: &mut AppState) -> Option<Effect> {
+    if page.route == Route::Library
+        && page.cache_key() == "library:liked"
+        && (state.page.route != Route::Library || page.generation != state.generation)
+    {
+        if page.state == LoadState::Ready || matches!(page.state, LoadState::Partial(_)) {
+            state.page_cache.insert(page.cache_key(), (page, Instant::now()));
+        }
+        return None;
+    }
+    if page.generation != state.generation || page.route.key() != state.page.route.key() {
+        return None;
+    }
+    if state.page.loading_more {
+        for incoming in page.sections.drain(..) {
+            if let Some(existing) =
+                state.page.sections.iter_mut().find(|section| section.title == incoming.title)
+            {
+                existing.items.extend(incoming.items);
+            } else {
+                state.page.sections.push(incoming);
+            }
+        }
+        state.page.next_offset = page.next_offset;
+        state.page.loading_more = false;
+        state.page.state = page.state;
+        None
+    } else {
+        if page.route == Route::Settings {
+            update_settings_rows(&mut page, state);
+        }
+        page.filter.clone_from(&state.page.filter);
+        page.library_tab = state.page.library_tab;
+        page.search_filter = state.page.search_filter;
+        let accepted = state.accept_page(page);
+        if accepted
+            && state.page.route == Route::Home
+            && !state.liked_songs_warmed
+            && !state.page_cache.contains_key("library:liked")
+        {
+            state.liked_songs_warmed = true;
+            Some(Effect::WarmLikedSongs)
+        } else {
+            None
+        }
+    }
+}
+
 fn update_settings_rows(page: &mut crate::PageState, state: &AppState) {
     for item in page.sections.iter_mut().flat_map(|section| &mut section.items) {
         item.title = match item.id.as_str() {
             "artwork" => format!("Artwork: {:?}", state.artwork),
+            "artwork-under-overlays" => format!(
+                "Artwork behind menus: {}",
+                if state.artwork_under_overlays { "enabled" } else { "disabled" }
+            ),
             "mouse" => format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" }),
             "wide-queue" => format!(
                 "Wide-screen queue: {}",
@@ -1009,6 +1089,7 @@ fn save_cli_settings(session: &Session, state: &AppState) -> Result<()> {
     let mut saved = session.settings.load()?;
     saved.cli = Some(CliSettings {
         artwork: state.artwork,
+        artwork_under_overlays: state.artwork_under_overlays,
         mouse: state.mouse,
         wide_queue: state.wide_queue,
         side_player_max_height: state.side_player_max_height,
@@ -1131,7 +1212,11 @@ impl FastPollTracker {
 }
 
 struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
+    restored: bool,
+    raw_mode: bool,
+    #[cfg(test)]
+    restore_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl TerminalGuard {
@@ -1143,18 +1228,121 @@ impl TerminalGuard {
             return Err(io_error(error));
         }
         Terminal::new(CrosstermBackend::new(stdout))
-            .map(|terminal| Self { terminal })
+            .map(|terminal| Self {
+                terminal: Some(terminal),
+                restored: false,
+                raw_mode: true,
+                #[cfg(test)]
+                restore_flag: None,
+            })
             .map_err(io_error)
     }
+
+    #[cfg(test)]
+    fn dummy() -> Self {
+        Self { terminal: None, restored: false, raw_mode: false, restore_flag: None }
+    }
+
+    #[cfg(test)]
+    fn dummy_with_flag(flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self { terminal: None, restored: false, raw_mode: false, restore_flag: Some(flag) }
+    }
+
     fn draw(&mut self, draw: impl FnOnce(&mut ratatui::Frame<'_>)) -> Result<()> {
-        self.terminal.draw(draw).map(|_| ()).map_err(io_error)
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.draw(draw).map(|_| ()).map_err(io_error)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn restore(&mut self) {
+        if !self.restored {
+            self.restored = true;
+            #[cfg(test)]
+            if let Some(flag) = &self.restore_flag {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if self.raw_mode {
+                let _ = disable_raw_mode();
+                self.raw_mode = false;
+            }
+            if let Some(terminal) = self.terminal.as_mut() {
+                let _ = execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen);
+                let _ = terminal.show_cursor();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    fn is_restored(&self) -> bool {
+        self.restored
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen);
-        let _ = self.terminal.show_cursor();
+        self.restore();
+    }
+}
+
+#[cfg(test)]
+mod terminal_guard_tests {
+    use super::*;
+
+    #[test]
+    fn normal_quit_restores_terminal() {
+        let mut guard = TerminalGuard::dummy();
+        assert!(!guard.is_restored());
+        guard.restore();
+        assert!(guard.is_restored());
+        // Calling restore again is idempotent
+        guard.restore();
+        assert!(guard.is_restored());
+    }
+
+    fn fail_with_guard(flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<()> {
+        let _guard = TerminalGuard::dummy_with_flag(flag);
+        Err(AppError::new(ErrorKind::Storage, "simulated error"))
+    }
+
+    #[test]
+    fn errors_still_restore_terminal_through_drop() {
+        let restored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&restored);
+
+        let result = fail_with_guard(flag);
+        assert!(result.is_err());
+        assert!(
+            restored.load(std::sync::atomic::Ordering::Acquire),
+            "TerminalGuard::drop must restore terminal on error exit"
+        );
+    }
+
+    #[test]
+    fn quitting_while_worker_active_restores_terminal_first() {
+        let mut terminal = TerminalGuard::dummy();
+        assert!(!terminal.is_restored());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_thread = std::thread::spawn(move || {
+            // Simulate a background request in flight
+            rx.recv().unwrap();
+        });
+
+        // 1. Stop UI loop
+        // 2. Clear artwork
+        // 3. Persist settings
+        // 4. Explicitly restore terminal
+        terminal.restore();
+        assert!(
+            terminal.is_restored(),
+            "Terminal must be restored immediately before worker shutdown"
+        );
+
+        // 5. Worker cleanup / drop can now block without trapping the user
+        tx.send(()).unwrap();
+        worker_thread.join().unwrap();
     }
 }
