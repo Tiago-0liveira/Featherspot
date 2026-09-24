@@ -1182,6 +1182,7 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
                 }
             }
         }
+        "artwork-under-overlays" => state.artwork_under_overlays = !state.artwork_under_overlays,
         "mouse" => state.mouse = !state.mouse,
         "wide-queue" => state.wide_queue = !state.wide_queue,
         "side-player-height" => {
@@ -1228,6 +1229,10 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
     {
         item.title = match id {
             "artwork" => format!("Artwork: {:?}", state.artwork),
+            "artwork-under-overlays" => format!(
+                "Artwork behind menus: {}",
+                if state.artwork_under_overlays { "enabled" } else { "disabled" }
+            ),
             "mouse" => format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" }),
             "wide-queue" => format!(
                 "Wide-screen queue: {}",
@@ -2477,5 +2482,42 @@ mod tests {
         reduce(&mut state, Action::LocalRight);
         assert_eq!(state.page.library_tab, LibraryTab::Albums);
         assert_eq!(state.page.flattened()[0].title, "Album 1");
+    }
+
+    #[test]
+    fn activate_setting_toggles_artwork_behind_menus() {
+        let mut state = AppState::default();
+        assert!(!state.artwork_under_overlays);
+
+        state.page.sections = vec![crate::state::Section {
+            title: "Terminal".into(),
+            items: vec![crate::state::BrowseItem {
+                id: "artwork-under-overlays".into(),
+                kind: EntityKind::Action,
+                title: "Artwork behind menus: disabled".into(),
+                subtitle: String::new(),
+                metadata: String::new(),
+                uri: None,
+                external_url: None,
+                artwork_url: None,
+                artists: Vec::new(),
+                album: None,
+                duration_ms: None,
+                available: true,
+                saved: None,
+                context: None,
+                restricted: false,
+            }],
+        }];
+
+        let effects = activate_setting(&mut state, "artwork-under-overlays");
+        assert!(state.artwork_under_overlays);
+        assert_eq!(state.page.sections[0].items[0].title, "Artwork behind menus: enabled");
+        assert_eq!(effects, vec![Effect::SaveSettings]);
+
+        let effects2 = activate_setting(&mut state, "artwork-under-overlays");
+        assert!(!state.artwork_under_overlays);
+        assert_eq!(state.page.sections[0].items[0].title, "Artwork behind menus: disabled");
+        assert_eq!(effects2, vec![Effect::SaveSettings]);
     }
 }

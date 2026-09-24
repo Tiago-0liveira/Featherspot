@@ -530,6 +530,7 @@ pub struct AppState {
     pub page_cache: HashMap<String, (PageState, Instant)>,
     pub startup_focus_pending: bool,
     pub liked_songs_warmed: bool,
+    pub artwork_under_overlays: bool,
 }
 
 impl Default for AppState {
@@ -572,6 +573,7 @@ impl Default for AppState {
             page_cache: HashMap::new(),
             startup_focus_pending: true,
             liked_songs_warmed: false,
+            artwork_under_overlays: false,
         }
     }
 }

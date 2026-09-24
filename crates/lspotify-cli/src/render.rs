@@ -48,7 +48,7 @@ fn render_inner(
     hits.clear();
     let area = frame.area();
     state.update_layout(area.width, area.height);
-    let artwork_visible = state.overlay.is_none();
+    let artwork_visible = state.overlay.is_none() || state.artwork_under_overlays;
     if !artwork_visible && let Some(manager) = artwork.as_deref_mut() {
         manager.clear_placement();
     }
@@ -2344,5 +2344,40 @@ mod tests {
             }
         }
         assert!(found_symbol, "Expected placeholder ♪ to be rendered in deck");
+    }
+
+    #[test]
+    fn artwork_under_overlays_visibility() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState {
+            overlay: Some(crate::state::Overlay::Help { query: String::new(), editing: false }),
+            artwork_under_overlays: false,
+            playback: crate::state::PlaybackState {
+                artwork_url: Some("https://example.com/art.jpg".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut manager = ArtworkManager::new(lspotify_core::CliArtworkPreference::Auto);
+        manager.set_placement_for_test(ArtworkPlacement::Player, "https://example.com/art.jpg");
+        assert!(manager.has_placement(ArtworkPlacement::Player));
+
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|frame| render_with_artwork(frame, &mut state, &mut hits, &mut manager))
+            .unwrap();
+
+        // Default setting hides artwork under overlays (placement is cleared)
+        assert!(!manager.has_placement(ArtworkPlacement::Player));
+
+        // When artwork_under_overlays is enabled, placement is preserved under overlays
+        manager.set_placement_for_test(ArtworkPlacement::Player, "https://example.com/art.jpg");
+        state.artwork_under_overlays = true;
+        terminal
+            .draw(|frame| render_with_artwork(frame, &mut state, &mut hits, &mut manager))
+            .unwrap();
+
+        assert!(manager.has_placement(ArtworkPlacement::Player));
     }
 }

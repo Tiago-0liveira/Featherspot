@@ -174,6 +174,7 @@ fn run() -> Result<()> {
     let cached_session = session.cli_session.load();
     let mut state = AppState {
         artwork: cli.artwork,
+        artwork_under_overlays: cli.artwork_under_overlays,
         mouse: cli.mouse,
         wide_queue: cli.wide_queue,
         side_player_max_height: cli.side_player_max_height,
@@ -300,6 +301,7 @@ fn run() -> Result<()> {
     artwork.clear_placement();
     let settings = CliSettings {
         artwork: state.artwork,
+        artwork_under_overlays: state.artwork_under_overlays,
         mouse: state.mouse,
         wide_queue: state.wide_queue,
         side_player_max_height: state.side_player_max_height,
@@ -1046,6 +1048,10 @@ fn update_settings_rows(page: &mut crate::PageState, state: &AppState) {
     for item in page.sections.iter_mut().flat_map(|section| &mut section.items) {
         item.title = match item.id.as_str() {
             "artwork" => format!("Artwork: {:?}", state.artwork),
+            "artwork-under-overlays" => format!(
+                "Artwork behind menus: {}",
+                if state.artwork_under_overlays { "enabled" } else { "disabled" }
+            ),
             "mouse" => format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" }),
             "wide-queue" => format!(
                 "Wide-screen queue: {}",
@@ -1080,6 +1086,7 @@ fn save_cli_settings(session: &Session, state: &AppState) -> Result<()> {
     let mut saved = session.settings.load()?;
     saved.cli = Some(CliSettings {
         artwork: state.artwork,
+        artwork_under_overlays: state.artwork_under_overlays,
         mouse: state.mouse,
         wide_queue: state.wide_queue,
         side_player_max_height: state.side_player_max_height,

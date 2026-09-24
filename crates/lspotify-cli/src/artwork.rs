@@ -175,6 +175,19 @@ impl ArtworkManager {
         square_cell_size_with_font(max_width, max_height, font_w, font_h)
     }
 
+    #[must_use]
+    pub fn has_placement(&self, placement: ArtworkPlacement) -> bool {
+        self.slots.get(&placement).is_some_and(|slot| slot.has_image || slot.current.is_some())
+    }
+
+    #[cfg(test)]
+    pub fn set_placement_for_test(&mut self, placement: ArtworkPlacement, url: &str) {
+        if let Some(slot) = self.slots.get_mut(&placement) {
+            slot.has_image = true;
+            slot.current = Some(url.to_string());
+        }
+    }
+
     pub fn render(
         &mut self,
         frame: &mut Frame<'_>,

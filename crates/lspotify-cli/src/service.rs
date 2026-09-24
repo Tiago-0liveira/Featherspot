@@ -474,6 +474,7 @@ fn load_page(
                 title: "Terminal".into(),
                 items: vec![
                     setting_item("artwork", "Artwork: Auto / Blocks / Off"),
+                    setting_item("artwork-under-overlays", "Artwork behind menus: disabled"),
                     setting_item("mouse", "Mouse input: enabled"),
                     setting_item("wide-queue", "Wide-screen queue: enabled"),
                     setting_item("side-player-height", "Side player max height: 28 rows"),

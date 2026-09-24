@@ -120,4 +120,32 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Storage);
         assert!(fs::read_to_string(path).unwrap().contains("999"));
     }
+
+    #[test]
+    fn settings_store_persists_artwork_under_overlays() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let store = JsonSettingsStore::new(&path);
+        let settings = SettingsState {
+            cli: Some(lspotify_core::CliSettings {
+                artwork_under_overlays: true,
+                ..lspotify_core::CliSettings::default()
+            }),
+            ..SettingsState::default()
+        };
+        store.save(&settings).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert!(loaded.cli.unwrap().artwork_under_overlays);
+    }
+
+    #[test]
+    fn older_settings_file_deserializes_with_artwork_under_overlays_disabled() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"schema_version":1,"cli":{"artwork":"auto"}}"#).unwrap();
+        let store = JsonSettingsStore::new(&path);
+        let loaded = store.load().unwrap();
+        assert!(!loaded.cli.unwrap().artwork_under_overlays);
+    }
 }
