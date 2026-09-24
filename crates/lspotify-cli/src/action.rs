@@ -134,6 +134,7 @@ impl HitMap {
 }
 
 pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+    state.startup_focus_pending = false;
     // Exit precedes text entry and overlays. Lower-case q remains the Queue shortcut.
     let action = if matches!(key.code, KeyCode::Char('x' | 'Q'))
         || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::SHIFT))
@@ -236,6 +237,7 @@ pub fn dispatch_mouse(
     event: MouseEvent,
     now: Instant,
 ) -> Vec<Effect> {
+    state.startup_focus_pending = false;
     if !state.mouse {
         return Vec::new();
     }
@@ -2315,5 +2317,24 @@ mod tests {
             }]
         );
         assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn user_interaction_clears_startup_focus_pending() {
+        let mut state = AppState::default();
+        assert!(state.startup_focus_pending);
+        let _ = dispatch_key(&mut state, KeyEvent::from(KeyCode::Char('k')));
+        assert!(!state.startup_focus_pending);
+
+        state.startup_focus_pending = true;
+        let mut hits = HitMap::default();
+        let mouse_event = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        };
+        let _ = dispatch_mouse(&mut state, &mut hits, mouse_event, Instant::now());
+        assert!(!state.startup_focus_pending);
     }
 }

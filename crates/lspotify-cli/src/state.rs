@@ -528,6 +528,7 @@ pub struct AppState {
     pub playback_history: Vec<PlaybackState>,
     pub recent_searches: Vec<String>,
     pub page_cache: HashMap<String, (PageState, Instant)>,
+    pub startup_focus_pending: bool,
 }
 
 impl Default for AppState {
@@ -568,6 +569,7 @@ impl Default for AppState {
             playback_history: Vec::new(),
             recent_searches: Vec::new(),
             page_cache: HashMap::new(),
+            startup_focus_pending: true,
         }
     }
 }
@@ -673,6 +675,7 @@ impl AppState {
         }
         self.overlay = None;
         self.text_entry = false;
+        self.startup_focus_pending = false;
         self.clear_error_notice();
         self.generation
     }
@@ -765,12 +768,39 @@ impl AppState {
             _ => self.page.selected_item(),
         }
     }
-    pub fn accept_page(&mut self, page: PageState) -> bool {
+    pub fn accept_page(&mut self, mut page: PageState) -> bool {
         if page.generation != self.generation || page.route.key() != self.page.route.key() {
             return false;
         }
         if page.state == LoadState::Ready || matches!(page.state, LoadState::Partial(_)) {
             self.page_cache.insert(page.cache_key(), (page.clone(), Instant::now()));
+        }
+        let is_valid_home = page.route == Route::Home
+            && matches!(page.state, LoadState::Ready | LoadState::Partial(_) | LoadState::Empty(_));
+        if self.startup_focus_pending && is_valid_home {
+            self.focus = FocusRegion::Content;
+            let len = page.flattened().len();
+            page.cursor.selected = 0;
+            page.cursor.offset = 0;
+            if len > 0 {
+                page.cursor.reveal(self.content_height, len);
+            }
+            self.startup_focus_pending = false;
+        } else if self.page.route.key() == page.route.key() {
+            let prev_cursor = self.page.cursor.clone();
+            if prev_cursor.selected > 0 || prev_cursor.offset > 0 {
+                let len = page.flattened().len();
+                page.cursor = prev_cursor;
+                if len == 0 {
+                    page.cursor.selected = 0;
+                    page.cursor.offset = 0;
+                } else if page.cursor.selected >= len {
+                    page.cursor.selected = len - 1;
+                    page.cursor.reveal(self.content_height, len);
+                } else {
+                    page.cursor.reveal(self.content_height, len);
+                }
+            }
         }
         self.page = page;
         self.response_log.push_back(self.generation);
@@ -1310,5 +1340,80 @@ mod tests {
 
         let playlist_actions_in_library = actions_for(&playlist, &Route::Library, &state);
         assert!(playlist_actions_in_library.contains(&ContextAction::DeletePlaylist));
+    }
+
+    #[test]
+    fn fresh_launch_home_response_selects_row_zero() {
+        let mut state = AppState::default();
+        assert!(state.startup_focus_pending);
+        let mut home_page = PageState::loading(Route::Home, 0);
+        home_page.state = LoadState::Ready;
+        home_page.sections = vec![Section {
+            title: "Recently played".into(),
+            items: vec![
+                BrowseItem::message("item-1", "Track 1"),
+                BrowseItem::message("item-2", "Track 2"),
+            ],
+        }];
+        assert!(state.accept_page(home_page));
+        assert_eq!(state.focus, FocusRegion::Content);
+        assert_eq!(state.page.cursor.selected, 0);
+        assert_eq!(state.page.cursor.offset, 0);
+        assert!(!state.startup_focus_pending);
+    }
+
+    #[test]
+    fn user_interaction_before_home_response_prevents_automatic_focus_changes() {
+        let mut state = AppState::default();
+        assert!(state.startup_focus_pending);
+        state.focus = FocusRegion::Sidebar;
+        state.startup_focus_pending = false;
+
+        let mut home_page = PageState::loading(Route::Home, 0);
+        home_page.state = LoadState::Ready;
+        home_page.sections = vec![Section {
+            title: "Recently played".into(),
+            items: vec![
+                BrowseItem::message("item-1", "Track 1"),
+                BrowseItem::message("item-2", "Track 2"),
+            ],
+        }];
+        assert!(state.accept_page(home_page));
+        assert_eq!(state.focus, FocusRegion::Sidebar);
+        assert!(!state.startup_focus_pending);
+    }
+
+    #[test]
+    fn subsequent_home_refreshes_do_not_reset_cursor() {
+        let mut state = AppState::default();
+        let mut home_page = PageState::loading(Route::Home, 0);
+        home_page.state = LoadState::Ready;
+        home_page.sections = vec![Section {
+            title: "Recently played".into(),
+            items: vec![
+                BrowseItem::message("item-1", "Track 1"),
+                BrowseItem::message("item-2", "Track 2"),
+                BrowseItem::message("item-3", "Track 3"),
+            ],
+        }];
+        assert!(state.accept_page(home_page));
+        state.content_height = 2;
+        state.page.cursor.selected = 2;
+        state.page.cursor.offset = 1;
+
+        let mut refreshed_home = PageState::loading(Route::Home, state.generation);
+        refreshed_home.state = LoadState::Ready;
+        refreshed_home.sections = vec![Section {
+            title: "Recently played".into(),
+            items: vec![
+                BrowseItem::message("item-1", "Track 1"),
+                BrowseItem::message("item-2", "Track 2"),
+                BrowseItem::message("item-3", "Track 3"),
+                BrowseItem::message("item-4", "Track 4"),
+            ],
+        }];
+        assert!(state.accept_page(refreshed_home));
+        assert_eq!(state.page.cursor.selected, 2);
+        assert_eq!(state.page.cursor.offset, 1);
     }
 }
