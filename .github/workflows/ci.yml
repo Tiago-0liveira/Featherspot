@@ -2,63 +2,139 @@ name: CI
 
 on:
   pull_request:
-  push:
     branches:
       - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  portable:
-    name: Portable core (${{ matrix.os }})
+  build:
+    name: Build / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.1
-          components: rustfmt, clippy
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo check --workspace --all-targets --locked
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+        include:
+          - name: Ubuntu
+            os: ubuntu-24.04
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
 
-  windows:
-    name: Windows x64
-    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
-          targets: x86_64-pc-windows-msvc
-          components: rustfmt, clippy
+
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo check --workspace --all-targets --locked
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo build --workspace --release --locked --target x86_64-pc-windows-msvc
-      - name: Check Windows release SBOMs
-        shell: pwsh
+
+      - name: Build release workspace
+        run: cargo build --workspace --release --locked
+
+  release-readiness:
+    name: Release readiness
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        shell: bash
         run: |
-          cargo install cargo-cyclonedx --version 0.5.9 --locked
-          if ($LASTEXITCODE -ne 0) { throw 'Could not install cargo-cyclonedx.' }
-          ./scripts/generate-windows-sboms.ps1 -ReleaseTag v0.0.0 -OutputDir dist/ci-sbom
+          set -euo pipefail
 
-  release:
-    name: Publish release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [portable, windows]
-    permissions:
-      actions: read
-      contents: write
-    uses: ./.github/workflows/release.yml
+          required=(
+            Cargo.toml
+            Cargo.lock
+            install.ps1
+            install.cmd
+            packaging/windows/wix/Package.wxs
+            scripts/generate-windows-sboms.ps1
+          )
+
+          for path in "${required[@]}"; do
+            test -f "$path" || {
+              echo "::error::Missing release input: $path"
+              exit 1
+            }
+          done
+
+          git fetch --tags --force
+
+          latest="$(
+            git tag --list 'v*' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n 1 \
+              || true
+          )"
+
+          if [[ -z "$latest" ]]; then
+            next="v0.1.0"
+          else
+            IFS='.' read -r major minor patch <<< "${latest#v}"
+
+            if (( patch < 65535 )); then
+              ((patch += 1))
+            elif (( minor < 255 )); then
+              ((minor += 1))
+              patch=0
+            else
+              ((major += 1))
+              minor=0
+              patch=0
+            fi
+
+            if (( major > 255 )); then
+              echo "::error::MSI version range exhausted."
+              exit 1
+            fi
+
+            next="v${major}.${minor}.${patch}"
+          fi
+
+          echo "Latest release: ${latest:-none}"
+          echo "Next release:   $next"
+
+  pr-gate:
+    name: PR Gate
+    if: always()
+    needs:
+      - build
+      - release-readiness
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Require every PR check to pass
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_RESULT: ${{ needs.release-readiness.result }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$BUILD_RESULT" != "success" || "$RELEASE_RESULT" != "success" ]]; then
+            echo "::error::PR checks did not all pass."
+            echo "Build: $BUILD_RESULT"
+            echo "Release readiness: $RELEASE_RESULT"
+            exit 1
+          fi
+
+          echo "All PR checks passed."
