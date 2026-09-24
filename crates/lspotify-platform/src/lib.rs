@@ -550,14 +550,13 @@ mod tests {
 
         let (done_sender, done_receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = player.shutdown_with_reason("test shutdown");
-            let _ = done_sender.send(result);
+            let _ = done_sender.send(player.shutdown_with_reason("test shutdown").is_ok());
         });
 
-        let result = done_receiver
+        let succeeded = done_receiver
             .recv_timeout(Duration::from_millis(500))
-            .expect("shutdown must not deadlock while joining a thread that reads shutdown_reason");
-        assert!(result.is_ok());
+            .expect("shutdown deadlocked while joining helper thread");
+        assert!(succeeded);
     }
 
     #[cfg(target_os = "windows")]
@@ -577,7 +576,7 @@ mod tests {
 
         done_receiver
             .recv_timeout(Duration::from_millis(500))
-            .expect("event forwarding must not block when the UI stopped draining events");
+            .expect("event forwarder blocked on full queue");
         drop(receiver);
     }
 
