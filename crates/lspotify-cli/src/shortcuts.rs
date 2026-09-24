@@ -305,48 +305,94 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     #[must_use]
-    pub const fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
-        Self { code, modifiers }
+    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
+        Self { code, modifiers }.normalized()
     }
 
     #[must_use]
-    pub const fn char(ch: char) -> Self {
-        Self { code: KeyCode::Char(ch), modifiers: KeyModifiers::NONE }
+    pub fn char(ch: char) -> Self {
+        Self::new(KeyCode::Char(ch), KeyModifiers::NONE)
     }
 
     #[must_use]
-    pub const fn char_with_ctrl(ch: char) -> Self {
-        Self { code: KeyCode::Char(ch), modifiers: KeyModifiers::CONTROL }
+    pub fn char_with_ctrl(ch: char) -> Self {
+        Self::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
     }
 
     #[must_use]
-    pub const fn char_with_shift(ch: char) -> Self {
-        Self { code: KeyCode::Char(ch), modifiers: KeyModifiers::SHIFT }
+    pub fn char_with_shift(ch: char) -> Self {
+        Self::new(KeyCode::Char(ch), KeyModifiers::SHIFT)
+    }
+
+    /// Normalizes key representation so runtime matching and comparison agree.
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        match self.code {
+            KeyCode::BackTab => {
+                self.code = KeyCode::Tab;
+                self.modifiers |= KeyModifiers::SHIFT;
+            }
+            KeyCode::Char(ch) => {
+                if ch.is_ascii_alphabetic() {
+                    if self.modifiers.contains(KeyModifiers::CONTROL) {
+                        self.code = KeyCode::Char(ch.to_ascii_lowercase());
+                    } else if self.modifiers.contains(KeyModifiers::SHIFT)
+                        || ch.is_ascii_uppercase()
+                    {
+                        self.modifiers |= KeyModifiers::SHIFT;
+                        self.code = KeyCode::Char(ch.to_ascii_uppercase());
+                    } else {
+                        self.code = KeyCode::Char(ch.to_ascii_lowercase());
+                    }
+                } else if ch != ' ' {
+                    self.modifiers.remove(KeyModifiers::SHIFT);
+                }
+            }
+            _ => {}
+        }
+        self
+    }
+
+    /// Checks if this key binding semantically conflicts with another key binding,
+    /// following the same rules as runtime event dispatch matching.
+    #[must_use]
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        let a = self.normalized();
+        let b = other.normalized();
+
+        let a_ctrl = a.modifiers.contains(KeyModifiers::CONTROL);
+        let b_ctrl = b.modifiers.contains(KeyModifiers::CONTROL);
+        let a_alt = a.modifiers.contains(KeyModifiers::ALT);
+        let b_alt = b.modifiers.contains(KeyModifiers::ALT);
+
+        if a_ctrl != b_ctrl || a_alt != b_alt {
+            return false;
+        }
+
+        let a_shift = a.modifiers.contains(KeyModifiers::SHIFT);
+        let b_shift = b.modifiers.contains(KeyModifiers::SHIFT);
+
+        match (a.code, b.code) {
+            (KeyCode::Char(' '), KeyCode::Char(' ')) => !a_shift && !b_shift,
+            (KeyCode::Char(ac), KeyCode::Char(bc)) => {
+                if ac.is_ascii_alphabetic() && bc.is_ascii_alphabetic() {
+                    ac.eq_ignore_ascii_case(&bc) && a_shift == b_shift
+                } else if !ac.is_ascii_alphabetic() && !bc.is_ascii_alphabetic() {
+                    ac == bc
+                } else {
+                    false
+                }
+            }
+            (a_code, b_code) => a_code == b_code && a_shift == b_shift,
+        }
     }
 
     /// Creates a `KeyBinding` from a crossterm `KeyEvent`.
     #[must_use]
     pub fn from_event(event: &KeyEvent) -> Self {
-        let mut modifiers =
+        let modifiers =
             event.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
-        let code = match event.code {
-            KeyCode::BackTab => {
-                modifiers |= KeyModifiers::SHIFT;
-                KeyCode::Tab
-            }
-            KeyCode::Char(ch) => {
-                if modifiers.contains(KeyModifiers::CONTROL) {
-                    KeyCode::Char(ch.to_ascii_lowercase())
-                } else if ch.is_ascii_uppercase() {
-                    modifiers |= KeyModifiers::SHIFT;
-                    KeyCode::Char(ch)
-                } else {
-                    KeyCode::Char(ch)
-                }
-            }
-            other => other,
-        };
-        Self { code, modifiers }
+        Self::new(event.code, modifiers)
     }
 
     /// Parses a canonical string representation such as `"x"`, `"Shift+Q"`, `"Ctrl+C"`, `"Space"`.
@@ -430,34 +476,35 @@ impl KeyBinding {
             }
         };
 
-        Ok(Self { code, modifiers })
+        Ok(Self::new(code, modifiers))
     }
 
     /// Serializes to a stable canonical string representation.
     #[must_use]
     pub fn to_canonical(self) -> String {
+        let binding = self.normalized();
         let mut prefix = String::new();
-        if self.modifiers.contains(KeyModifiers::CONTROL) {
+        if binding.modifiers.contains(KeyModifiers::CONTROL) {
             prefix.push_str("Ctrl+");
         }
-        if self.modifiers.contains(KeyModifiers::ALT) {
+        if binding.modifiers.contains(KeyModifiers::ALT) {
             prefix.push_str("Alt+");
         }
-        let has_shift = self.modifiers.contains(KeyModifiers::SHIFT);
+        let has_shift = binding.modifiers.contains(KeyModifiers::SHIFT);
 
-        if let Some(name) = format_named_key(self.code) {
-            if has_shift || self.code == KeyCode::BackTab {
+        if let Some(name) = format_named_key(binding.code) {
+            if has_shift || binding.code == KeyCode::BackTab {
                 prefix.push_str("Shift+");
             }
             return format!("{prefix}{name}");
         }
 
-        if let KeyCode::Char(ch) = self.code {
+        if let KeyCode::Char(ch) = binding.code {
             if ch.is_ascii_alphabetic() {
                 if has_shift {
                     prefix.push_str("Shift+");
                     format!("{prefix}{}", ch.to_ascii_uppercase())
-                } else if self.modifiers.contains(KeyModifiers::CONTROL) {
+                } else if binding.modifiers.contains(KeyModifiers::CONTROL) {
                     format!("{prefix}{}", ch.to_ascii_uppercase())
                 } else {
                     format!("{prefix}{ch}")
@@ -469,7 +516,7 @@ impl KeyBinding {
                 format!("{prefix}{ch}")
             }
         } else {
-            format!("{prefix}{:?}", self.code)
+            format!("{prefix}{:?}", binding.code)
         }
     }
 
@@ -682,11 +729,14 @@ impl ShortcutRegistry {
         }
     }
 
+    pub const EMERGENCY_QUIT: KeyBinding =
+        KeyBinding { code: KeyCode::Char('c'), modifiers: KeyModifiers::CONTROL };
+
     #[must_use]
     pub fn format_quit_hint(&self) -> String {
         let bindings = self.get_bindings(ShortcutAction::Quit);
         if bindings.is_empty() {
-            "Ctrl+C".to_string()
+            Self::EMERGENCY_QUIT.to_canonical()
         } else {
             bindings.iter().copied().map(KeyBinding::to_canonical).collect::<Vec<_>>().join(" or ")
         }
@@ -696,6 +746,16 @@ impl ShortcutRegistry {
     #[must_use]
     pub fn is_quit(&self, event: &KeyEvent) -> bool {
         self.get_bindings(ShortcutAction::Quit).iter().any(|b| b.matches(event))
+            || Self::EMERGENCY_QUIT.matches(event)
+    }
+
+    /// Checks if a key event matches any binding for the given action.
+    #[must_use]
+    pub fn matches_action(&self, action: ShortcutAction, event: &KeyEvent) -> bool {
+        if action == ShortcutAction::Quit {
+            return self.is_quit(event);
+        }
+        self.get_bindings(action).iter().any(|b| b.matches(event))
     }
 
     /// Finds any conflicting action that already uses the given key in a conflicting scope.
@@ -705,6 +765,10 @@ impl ShortcutRegistry {
         action: ShortcutAction,
         key: &KeyBinding,
     ) -> Option<ShortcutAction> {
+        let key = key.normalized();
+        if action != ShortcutAction::Quit && key.conflicts_with(&Self::EMERGENCY_QUIT) {
+            return Some(ShortcutAction::Quit);
+        }
         for (&other_action, bindings) in &self.bindings {
             if other_action == action {
                 continue;
@@ -712,7 +776,7 @@ impl ShortcutRegistry {
             if !action.scope().conflicts_with(other_action.scope()) {
                 continue;
             }
-            if bindings.iter().any(|b| b == key) {
+            if bindings.iter().any(|b| b.conflicts_with(&key)) {
                 return Some(other_action);
             }
         }
@@ -725,6 +789,7 @@ impl ShortcutRegistry {
     ///
     /// Returns [`Conflict`] if `key` is already bound to another action in a conflicting scope.
     pub fn try_assign(&mut self, action: ShortcutAction, key: KeyBinding) -> Result<(), Conflict> {
+        let key = key.normalized();
         if let Some(conflicting_action) = self.find_conflict(action, &key) {
             return Err(Conflict { key, conflicting_action });
         }
@@ -734,22 +799,38 @@ impl ShortcutRegistry {
 
     /// Forcefully assigns `key` to `action`, removing it from any conflicting action.
     pub fn force_assign(&mut self, action: ShortcutAction, key: KeyBinding) {
+        let key = key.normalized();
+        if action != ShortcutAction::Quit && key.conflicts_with(&Self::EMERGENCY_QUIT) {
+            return;
+        }
         for (&other_action, bindings) in &mut self.bindings {
             if other_action != action && action.scope().conflicts_with(other_action.scope()) {
-                bindings.retain(|b| b != &key);
+                bindings.retain(|b| !b.conflicts_with(&key));
             }
         }
         self.bindings.insert(action, vec![key]);
     }
 
-    /// Removes all bindings for the given action.
+    /// Removes all bindings for the given action, while preserving the emergency Quit binding.
     pub fn remove_binding(&mut self, action: ShortcutAction) {
-        self.bindings.insert(action, Vec::new());
+        if action == ShortcutAction::Quit {
+            self.bindings.insert(action, vec![Self::EMERGENCY_QUIT]);
+        } else {
+            self.bindings.insert(action, Vec::new());
+        }
     }
 
-    /// Restores a single action to its default bindings.
+    /// Restores a single action to its default bindings, clearing conflicts from other actions first.
     pub fn restore_default(&mut self, action: ShortcutAction) {
-        self.bindings.insert(action, action.default_bindings());
+        let defaults = action.default_bindings();
+        for default_key in &defaults {
+            for (&other_action, bindings) in &mut self.bindings {
+                if other_action != action && action.scope().conflicts_with(other_action.scope()) {
+                    bindings.retain(|b| !b.conflicts_with(default_key));
+                }
+            }
+        }
+        self.bindings.insert(action, defaults);
     }
 
     /// Restores all actions to their default bindings.
@@ -778,7 +859,11 @@ impl ShortcutRegistry {
             if let Some(action) = ShortcutAction::from_id(id) {
                 let parsed: Vec<KeyBinding> =
                     raw_keys.iter().filter_map(|s| KeyBinding::parse(s).ok()).collect();
-                self.bindings.insert(action, parsed);
+                if action == ShortcutAction::Quit && parsed.is_empty() {
+                    self.bindings.insert(action, vec![Self::EMERGENCY_QUIT]);
+                } else {
+                    self.bindings.insert(action, parsed);
+                }
             }
         }
     }
@@ -1024,5 +1109,101 @@ mod tests {
         let p_key = KeyBinding::parse("p").unwrap();
         let err2 = registry.try_assign(ShortcutAction::TogglePlayback, p_key).unwrap_err();
         assert_eq!(err2.conflicting_action, ShortcutAction::DetailPlay);
+    }
+
+    #[test]
+    fn restore_default_conflict_safe() {
+        let mut registry = ShortcutRegistry::default();
+        let space = KeyBinding::parse("Space").unwrap();
+
+        // 1. Reassign Space from TogglePlayback to NextTrack
+        registry.force_assign(ShortcutAction::NextTrack, space);
+        assert_eq!(registry.get_bindings(ShortcutAction::NextTrack), &[space]);
+        assert!(registry.get_bindings(ShortcutAction::TogglePlayback).is_empty());
+
+        // 2. Restore TogglePlayback to defaults
+        registry.restore_default(ShortcutAction::TogglePlayback);
+
+        // 3. TogglePlayback now has Space, NextTrack loses Space (conflict cleared)
+        assert_eq!(registry.get_bindings(ShortcutAction::TogglePlayback), &[space]);
+        assert!(registry.get_bindings(ShortcutAction::NextTrack).is_empty());
+
+        // 4. Runtime resolution targets TogglePlayback
+        let space_event = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(
+            registry.resolve(&space_event, &Route::Home, false),
+            Some(ShortcutAction::TogglePlayback)
+        );
+    }
+
+    #[test]
+    fn shifted_symbol_and_punctuation_conflict_and_matching() {
+        let mut registry = ShortcutRegistry::default();
+
+        // '?' and 'Shift+?' conflict
+        let q_mark = KeyBinding::parse("?").unwrap();
+        let shift_q_mark = KeyBinding::parse("Shift+?").unwrap();
+        assert!(q_mark.conflicts_with(&shift_q_mark));
+        assert!(shift_q_mark.conflicts_with(&q_mark));
+        let err = registry.try_assign(ShortcutAction::StartSearch, shift_q_mark).unwrap_err();
+        assert_eq!(err.conflicting_action, ShortcutAction::ToggleHelp);
+
+        // Both shifted and unshifted events match the binding
+        let event_q_shift = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+        let event_q_noshift = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+        assert!(q_mark.matches(&event_q_shift));
+        assert!(q_mark.matches(&event_q_noshift));
+        assert!(shift_q_mark.matches(&event_q_shift));
+        assert!(shift_q_mark.matches(&event_q_noshift));
+
+        // '+' and 'Shift++'
+        let plus = KeyBinding::parse("+").unwrap();
+        let shift_plus = KeyBinding::parse("Shift++").unwrap();
+        assert!(plus.conflicts_with(&shift_plus));
+        let err_plus = registry.try_assign(ShortcutAction::VolumeDown, shift_plus).unwrap_err();
+        assert_eq!(err_plus.conflicting_action, ShortcutAction::VolumeUp);
+
+        // '-' and 'Shift+-'
+        let minus = KeyBinding::parse("-").unwrap();
+        let shift_minus = KeyBinding::parse("Shift+-").unwrap();
+        assert!(minus.conflicts_with(&shift_minus));
+        let err_minus = registry.try_assign(ShortcutAction::VolumeUp, shift_minus).unwrap_err();
+        assert_eq!(err_minus.conflicting_action, ShortcutAction::VolumeDown);
+
+        // Digits: '1' and 'Shift+1'
+        let one = KeyBinding::parse("1").unwrap();
+        let shift_one = KeyBinding::parse("Shift+1").unwrap();
+        assert!(one.conflicts_with(&shift_one));
+        let err_one = registry.try_assign(ShortcutAction::Search, shift_one).unwrap_err();
+        assert_eq!(err_one.conflicting_action, ShortcutAction::Home);
+    }
+
+    #[test]
+    fn emergency_quit_cannot_be_removed_or_stolen() {
+        let mut registry = ShortcutRegistry::default();
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        // Unbind Quit: emergency quit Ctrl+C is preserved
+        registry.remove_binding(ShortcutAction::Quit);
+        assert_eq!(
+            registry.get_bindings(ShortcutAction::Quit),
+            &[ShortcutRegistry::EMERGENCY_QUIT]
+        );
+        assert!(registry.is_quit(&ctrl_c));
+        assert_eq!(registry.format_quit_hint(), "Ctrl+C");
+
+        // Attempting to assign Ctrl+C to another action is rejected as a conflict
+        let ctrl_c_binding = KeyBinding::char_with_ctrl('c');
+        let err = registry.try_assign(ShortcutAction::TogglePlayback, ctrl_c_binding).unwrap_err();
+        assert_eq!(err.conflicting_action, ShortcutAction::Quit);
+
+        // Force assign cannot steal Ctrl+C from Quit
+        let original_toggle = registry.get_bindings(ShortcutAction::TogglePlayback).to_vec();
+        registry.force_assign(ShortcutAction::TogglePlayback, ctrl_c_binding);
+        assert!(registry.is_quit(&ctrl_c));
+        assert_eq!(
+            registry.get_bindings(ShortcutAction::TogglePlayback),
+            original_toggle.as_slice()
+        );
     }
 }
