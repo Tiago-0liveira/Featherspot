@@ -4373,6 +4373,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "vergen",
 ]
 
 [[package]]
