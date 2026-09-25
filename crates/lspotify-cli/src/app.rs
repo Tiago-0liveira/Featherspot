@@ -128,6 +128,10 @@ pub fn entry() {
             println!("lspotify {APP_VERSION}");
             return;
         }
+        Some("--licenses" | "licenses") => {
+            println!("{}", include_str!("../../../THIRD_PARTY_NOTICES.md"));
+            return;
+        }
         Some("update") => {
             println!("Checking for updates...");
             let repo = env::var("LSPOTIFY_REPO")
@@ -152,10 +156,12 @@ pub fn entry() {
             println!("Usage: lspotify [COMMAND]\n");
             println!("Commands:");
             println!("  update    Check for and install updates from GitHub Releases");
+            println!("  licenses  Print third-party license notices");
             println!("  version   Print version information");
             println!("  help      Print this help message\n");
             println!("Options:");
             println!("  -V, --version   Print version information");
+            println!("      --licenses  Print third-party license notices");
             println!("  -h, --help      Print help information");
             return;
         }
