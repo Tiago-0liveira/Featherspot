@@ -30,20 +30,29 @@ fn run() -> io::Result<()> {
 }
 
 fn dev() -> io::Result<()> {
+    #[cfg(target_os = "windows")]
     cargo(&["build", "-p", "lspotify-player-host", "-p", "lspotify-cli", "--bin", "lspotify"])?;
+    #[cfg(not(target_os = "windows"))]
+    cargo(&["build", "-p", "lspotify-cli", "--bin", "lspotify"])?;
+
     let profile = PathBuf::from("target/debug");
     let stage = profile.join("lspotify-dev");
-    let helpers = stage.join("helpers");
-    fs::create_dir_all(&helpers)?;
-    copy_binary(
-        &profile.join(binary_name("lspotify-player-host")),
-        &helpers.join(binary_name("lspotify-player-host")),
-    )?;
     let executable = binary_name("lspotify");
     copy_binary(&profile.join(&executable), &stage.join(&executable))?;
-    let status = Command::new(stage.join(&executable))
-        .env("LSPOTIFY_PLAYER_HOST", helpers.join(binary_name("lspotify-player-host")))
-        .status()?;
+
+    let mut command = Command::new(stage.join(&executable));
+    #[cfg(target_os = "windows")]
+    {
+        let helpers = stage.join("helpers");
+        fs::create_dir_all(&helpers)?;
+        copy_binary(
+            &profile.join(binary_name("lspotify-player-host")),
+            &helpers.join(binary_name("lspotify-player-host")),
+        )?;
+        command.env("LSPOTIFY_PLAYER_HOST", helpers.join(binary_name("lspotify-player-host")));
+    }
+
+    let status = command.status()?;
     if status.success() {
         Ok(())
     } else {
@@ -52,6 +61,7 @@ fn dev() -> io::Result<()> {
 }
 
 fn build_dist() -> io::Result<()> {
+    #[cfg(target_os = "windows")]
     cargo(&[
         "build",
         "--release",
@@ -62,6 +72,8 @@ fn build_dist() -> io::Result<()> {
         "-p",
         "lspotify-player-host",
     ])?;
+    #[cfg(not(target_os = "windows"))]
+    cargo(&["build", "--release", "-p", "lspotify-cli", "--bin", "lspotify"])?;
     let release = PathBuf::from("target/release");
     let binary = |name| release.join(binary_name(name));
     #[cfg(target_os = "windows")]
@@ -77,17 +89,12 @@ fn build_dist() -> io::Result<()> {
     {
         let root = release.join("dist/lspotify.app/Contents");
         copy_binary(&binary("lspotify"), &root.join("MacOS/lspotify"))?;
-        copy_binary(&binary("lspotify-player-host"), &root.join("Helpers/lspotify-player-host"))?;
         copy_file(&PathBuf::from("packaging/macos/Info.plist"), &root.join("Info.plist"))?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let root = release.join("dist/lspotify.AppDir");
         copy_binary(&binary("lspotify"), &root.join("usr/bin/lspotify"))?;
-        copy_binary(
-            &binary("lspotify-player-host"),
-            &root.join("usr/lib/lspotify/lspotify-player-host"),
-        )?;
         copy_file(
             &PathBuf::from("packaging/linux/lspotify.desktop"),
             &root.join("usr/share/applications/lspotify.desktop"),
