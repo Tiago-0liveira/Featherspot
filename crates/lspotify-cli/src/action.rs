@@ -11,9 +11,9 @@ use crate::state::{
     Overlay, PageState, Route, SearchFilter, Section, SettingsTab, actions_for,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub const LOCAL_DEVICE_PLACEHOLDER: &str = "lspotify-local";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Effect {
     LoadPage { route: Route, generation: u64, offset: u32, query: String, tab: Option<LibraryTab> },
     RefreshPlayback,
