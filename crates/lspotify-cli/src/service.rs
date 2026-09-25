@@ -353,7 +353,10 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
                 Err(error) => ServiceResponse::Command { effect, result: Err(error) },
             }
         }
-        Effect::OpenExternal(_) | Effect::SaveSettings => {
+        Effect::StartLocalPlayback
+        | Effect::ChangeLocalPlaybackBackend(_)
+        | Effect::OpenExternal(_)
+        | Effect::SaveSettings => {
             ServiceResponse::Command { effect, result: Ok(()) }
         }
         Effect::WarmLikedSongs => {
