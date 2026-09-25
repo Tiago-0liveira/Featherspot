@@ -6,9 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+librespot-connect.workspace = true
+librespot-core.workspace = true
+librespot-playback.workspace = true
 lspotify-core = { path = "../lspotify-core" }
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
+
+[build-dependencies]
+vergen.workspace = true

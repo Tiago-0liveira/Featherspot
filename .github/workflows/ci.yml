@@ -40,6 +40,10 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Linux audio build dependencies
+        if: matrix.name == 'Ubuntu'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Build release workspace
         run: cargo build --workspace --release --locked
 
@@ -63,8 +67,9 @@ jobs:
           required=(
             Cargo.toml
             Cargo.lock
-            install.ps1
-            install.cmd
+            scripts/install/install.ps1
+            scripts/install/install.cmd
+            scripts/install/install.sh
             packaging/windows/wix/Package.wxs
             scripts/generate-windows-sboms.ps1
           )

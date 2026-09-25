@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use lspotify_core::CliArtworkPreference;
+use lspotify_core::{CliArtworkPreference, LocalPlaybackBackendPreference};
 
 pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 24;
@@ -103,16 +103,18 @@ impl LibraryTab {
 pub enum SettingsTab {
     #[default]
     General,
+    Playback,
     Shortcuts,
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 2] = [Self::General, Self::Shortcuts];
+    pub const ALL: [Self; 3] = [Self::General, Self::Playback, Self::Shortcuts];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Playback => "Playback",
             Self::Shortcuts => "Shortcuts",
         }
     }
@@ -120,7 +122,8 @@ impl SettingsTab {
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
-            Self::General => Self::Shortcuts,
+            Self::General => Self::Playback,
+            Self::Playback => Self::Shortcuts,
             Self::Shortcuts => Self::General,
         }
     }
@@ -129,7 +132,8 @@ impl SettingsTab {
     pub const fn previous(self) -> Self {
         match self {
             Self::General => Self::Shortcuts,
-            Self::Shortcuts => Self::General,
+            Self::Playback => Self::General,
+            Self::Shortcuts => Self::Playback,
         }
     }
 }
@@ -548,6 +552,14 @@ pub struct Notice {
     pub text: String,
 }
 
+fn default_local_playback_backend() -> LocalPlaybackBackendPreference {
+    if cfg!(target_os = "windows") {
+        LocalPlaybackBackendPreference::SpotifyWeb
+    } else {
+        LocalPlaybackBackendPreference::Librespot
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct AppState {
@@ -582,8 +594,10 @@ pub struct AppState {
     pub artwork: CliArtworkPreference,
     pub mouse: bool,
     pub wide_queue: bool,
-    /// Device registered by the local Web Playback SDK host, when available.
+    /// Device registered by the selected local playback backend, when available.
     pub local_device_id: Option<String>,
+    pub local_playback_backend: LocalPlaybackBackendPreference,
+    pub local_start_requested: bool,
     pub selected_device_id: Option<String>,
     /// A device chosen from the Devices page must not be replaced automatically.
     pub device_selected_by_user: bool,
@@ -630,6 +644,8 @@ impl Default for AppState {
             mouse: true,
             wide_queue: true,
             local_device_id: None,
+            local_playback_backend: default_local_playback_backend(),
+            local_start_requested: false,
             selected_device_id: None,
             device_selected_by_user: false,
             response_log: VecDeque::new(),

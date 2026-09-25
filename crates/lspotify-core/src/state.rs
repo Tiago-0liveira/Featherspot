@@ -162,6 +162,22 @@ pub enum CliArtworkPreference {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalPlaybackBackendPreference {
+    SpotifyWeb,
+    Librespot,
+}
+
+impl LocalPlaybackBackendPreference {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SpotifyWeb => "Spotify Web Playback SDK",
+            Self::Librespot => "Librespot",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct CliSettings {
@@ -173,6 +189,8 @@ pub struct CliSettings {
     pub stacked_queue_min_height: u16,
     pub wide_breakpoint_width: u16,
     pub artwork_under_overlays: bool,
+    #[serde(default)]
+    pub local_playback_backend: Option<LocalPlaybackBackendPreference>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keybindings: BTreeMap<String, Vec<String>>,
 }
@@ -188,6 +206,7 @@ impl Default for CliSettings {
             stacked_queue_min_height: 38,
             wide_breakpoint_width: 140,
             artwork_under_overlays: false,
+            local_playback_backend: None,
             keybindings: BTreeMap::new(),
         }
     }
@@ -450,6 +469,7 @@ mod tests {
     fn default_cli_settings_has_artwork_under_overlays_disabled() {
         let settings = CliSettings::default();
         assert!(!settings.artwork_under_overlays);
+        assert_eq!(settings.local_playback_backend, None);
         assert!(settings.keybindings.is_empty());
     }
 

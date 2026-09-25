@@ -19,7 +19,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use lspotify_core::{
-    AppError, CliSettings, CredentialStore, ErrorKind, LocalPlayerCommand, LocalPlayerEvent, Result,
+    AppError, CliSettings, CredentialStore, ErrorKind, LocalPlaybackBackendPreference,
+    LocalPlayerCommand, LocalPlayerEvent, Result,
 };
 #[cfg(not(target_os = "windows"))]
 use lspotify_platform::MemoryCredentialStore;
@@ -127,6 +128,10 @@ pub fn entry() {
             println!("lspotify {APP_VERSION}");
             return;
         }
+        Some("--licenses" | "licenses") => {
+            println!("{}", include_str!("../../../THIRD_PARTY_NOTICES.md"));
+            return;
+        }
         Some("update") => {
             println!("Checking for updates...");
             let repo = env::var("LSPOTIFY_REPO")
@@ -151,10 +156,12 @@ pub fn entry() {
             println!("Usage: lspotify [COMMAND]\n");
             println!("Commands:");
             println!("  update    Check for and install updates from GitHub Releases");
+            println!("  licenses  Print third-party license notices");
             println!("  version   Print version information");
             println!("  help      Print this help message\n");
             println!("Options:");
             println!("  -V, --version   Print version information");
+            println!("      --licenses  Print third-party license notices");
             println!("  -h, --help      Print help information");
             return;
         }
@@ -171,9 +178,15 @@ fn run() -> Result<()> {
     let mut session = Session::load()?;
     println!("lspotify — sign in to Spotify in your browser.");
     let account = session.authenticate()?;
+    let mut saved = session.settings.load()?;
+    let mut cli = saved.cli.clone().unwrap_or_default();
+    let local_playback_backend = choose_local_playback_backend(&cli)?;
+    if cli.local_playback_backend != Some(local_playback_backend) {
+        cli.local_playback_backend = Some(local_playback_backend);
+        saved.cli = Some(cli.clone());
+        session.settings.save(&saved)?;
+    }
     let mut terminal = TerminalGuard::new()?;
-    let saved = session.settings.load()?;
-    let cli = saved.cli.unwrap_or_default();
     let cached_session = session.cli_session.load();
     let mut state = AppState {
         artwork: cli.artwork,
@@ -184,6 +197,7 @@ fn run() -> Result<()> {
         side_player_min_width: cli.side_player_min_width,
         stacked_queue_min_height: cli.stacked_queue_min_height,
         wide_breakpoint_width: cli.wide_breakpoint_width,
+        local_playback_backend,
         playback: PlaybackState { volume: cached_session.volume, ..PlaybackState::default() },
         recent_searches: cached_session.recent_searches,
         ..AppState::default()
@@ -195,15 +209,12 @@ fn run() -> Result<()> {
     let mut artwork = ArtworkManager::new(state.artwork);
     let access_token = session.access_token()?;
     let worker = ServiceHandle::start(access_token.clone())?;
-    let local_player = BackgroundLocalPlayer::start();
-    if let Err(error) = local_player
-        .send(LocalPlayerCommand::TokenUpdate { access_token })
-        .and_then(|()| local_player.send(LocalPlayerCommand::Connect))
-    {
+    let local_player = BackgroundLocalPlayer::start(local_playback_backend);
+    if let Err(error) = local_player.send(LocalPlayerCommand::TokenUpdate { access_token }) {
         state.notice = Some(Notice {
             kind: NoticeKind::Info,
             text: format!(
-                "Local playback engine could not start ({error}); Spotify Connect is still available."
+                "Local playback could not be prepared ({error}); Spotify Connect is still available."
             ),
         });
     }
@@ -312,6 +323,7 @@ fn run() -> Result<()> {
         side_player_min_width: state.side_player_min_width,
         stacked_queue_min_height: state.stacked_queue_min_height,
         wide_breakpoint_width: state.wide_breakpoint_width,
+        local_playback_backend: Some(state.local_playback_backend),
         keybindings: state.shortcuts.to_overrides(),
     };
     let mut saved = session.settings.load()?;
@@ -338,6 +350,35 @@ fn send_effects(
     for effect in effects {
         match effect {
             Effect::OpenExternal(url) => open_system_browser(&url)?,
+            Effect::StartLocalPlayback => {
+                send_local_command(local_player, LocalPlayerCommand::Connect, state);
+            }
+            Effect::ChangeLocalPlaybackBackend(backend) => {
+                let was_local = local_player_selected(state);
+                match local_player.set_backend(backend) {
+                    Ok(()) => {
+                        state.local_device_id = None;
+                        state.local_start_requested = false;
+                        if was_local {
+                            state.selected_device_id = None;
+                            state.playback.device_id = None;
+                        }
+                        state.notice = Some(Notice {
+                            kind: NoticeKind::Info,
+                            text: format!(
+                                "{} selected. Choose This computer from Devices to start it.",
+                                backend.label()
+                            ),
+                        });
+                    }
+                    Err(error) => {
+                        state.notice = Some(Notice {
+                            kind: NoticeKind::Error,
+                            text: format!("Could not change local playback engine: {error}"),
+                        });
+                    }
+                }
+            }
             Effect::SaveSettings => {}
             Effect::TogglePlayback if local_player_selected(state) => {
                 let command = if state.playback.playing {
@@ -584,12 +625,21 @@ fn handle_local_player_events(
             LocalPlayerEvent::Ready { device_id } => {
                 let device_id = device_id.to_string();
                 state.local_device_id = Some(device_id.clone());
-                select_automatic_device(state);
-                if state.playback.device_name.is_none() {
-                    state.playback.device_name = Some("lspotify".into());
-                }
-                if state.playback.device_id.is_none() {
-                    state.playback.device_id = Some(device_id);
+                let transfer_to_local = state.local_start_requested;
+                state.local_start_requested = false;
+                if transfer_to_local {
+                    state.selected_device_id = Some(device_id.clone());
+                    state.device_selected_by_user = true;
+                    state.playback.device_name = Some("This computer".into());
+                    state.playback.device_id = Some(device_id.clone());
+                } else {
+                    select_automatic_device(state);
+                    if state.playback.device_name.is_none() {
+                        state.playback.device_name = Some("lspotify".into());
+                    }
+                    if state.playback.device_id.is_none() {
+                        state.playback.device_id = Some(device_id.clone());
+                    }
                 }
                 if state.overlay == Some(crate::Overlay::DevicePicker) {
                     state.overlay = None;
@@ -605,12 +655,16 @@ fn handle_local_player_events(
                 select_automatic_device(state);
                 state.notice = Some(Notice {
                     kind: NoticeKind::Success,
-                    text: "Local playback engine is ready on this device.".into(),
+                    text: format!("{} is ready on this computer.", state.local_playback_backend.label()),
                 });
+                if transfer_to_local {
+                    worker.send(Effect::Transfer(device_id))?;
+                }
                 worker.send(Effect::RefreshPlayback)?;
             }
             LocalPlayerEvent::Unavailable => {
                 let was_selected = local_player_selected(state);
+                state.local_start_requested = false;
                 state.local_device_id = None;
                 if was_selected {
                     state.selected_device_id = None;
@@ -956,6 +1010,46 @@ fn session_snapshot(state: &AppState) -> CliSessionState {
         recent_searches: state.recent_searches.clone(),
     }
 }
+fn choose_local_playback_backend(
+    cli: &CliSettings,
+) -> Result<LocalPlaybackBackendPreference> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cli;
+        return Ok(LocalPlaybackBackendPreference::Librespot);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(backend) = cli.local_playback_backend {
+            return Ok(backend);
+        }
+
+        println!();
+        println!("Choose the local playback engine:");
+        println!();
+        println!("  1) Spotify Web Playback SDK (recommended)");
+        println!("     Official Spotify playback technology; more stable, but uses WebView2");
+        println!("     and substantially more memory while local playback is active.");
+        println!();
+        println!("  2) Librespot");
+        println!("     Lightweight native Rust playback with much lower overhead.");
+        println!("     Librespot is unofficial and may break when Spotify changes private protocols.");
+        println!();
+        println!("You can change this later in Settings > Playback.");
+        print!("Choice [1]: ");
+        io::stdout().flush().map_err(io_error)?;
+
+        let mut choice = String::new();
+        io::stdin().read_line(&mut choice).map_err(io_error)?;
+        Ok(if choice.trim() == "2" {
+            LocalPlaybackBackendPreference::Librespot
+        } else {
+            LocalPlaybackBackendPreference::SpotifyWeb
+        })
+    }
+}
+
 fn send_local_command(
     local_player: &BackgroundLocalPlayer,
     command: LocalPlayerCommand,
@@ -1096,9 +1190,16 @@ fn update_settings_rows(page: &mut crate::PageState, state: &AppState) {
                     "wide-breakpoint" => {
                         format!("Wide layout min width: {} cols", state.wide_breakpoint_width)
                     }
+                    "playback-backend" => {
+                        format!("Local playback engine: {}", state.local_playback_backend.label())
+                    }
                     _ => item.title.clone(),
                 };
             }
+        }
+        crate::state::SettingsTab::Playback => {
+            page.subtitle = "Local playback engine".into();
+            page.sections = crate::action::playback_settings_sections(state);
         }
         crate::state::SettingsTab::Shortcuts => {
             page.subtitle = "Configure keyboard shortcuts".into();
@@ -1118,6 +1219,7 @@ fn save_cli_settings(session: &Session, state: &AppState) -> Result<()> {
         side_player_min_width: state.side_player_min_width,
         stacked_queue_min_height: state.stacked_queue_min_height,
         wide_breakpoint_width: state.wide_breakpoint_width,
+        local_playback_backend: Some(state.local_playback_backend),
         keybindings: state.shortcuts.to_overrides(),
     });
     session.settings.save(&saved)

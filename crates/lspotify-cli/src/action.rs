@@ -3,11 +3,15 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
+use lspotify_core::LocalPlaybackBackendPreference;
+
 use crate::shortcuts::{KeyBinding, ShortcutAction};
 use crate::state::{
     AppState, BrowseItem, ContextAction, EntityKind, FocusRegion, LibraryTab, Notice, NoticeKind,
     Overlay, PageState, Route, SearchFilter, Section, SettingsTab, actions_for,
 };
+
+pub const LOCAL_DEVICE_PLACEHOLDER: &str = "lspotify-local";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Effect {
@@ -25,6 +29,8 @@ pub enum Effect {
     PlayContext { uri: String, position: usize, device_id: Option<String> },
     Enqueue(String),
     Transfer(String),
+    StartLocalPlayback,
+    ChangeLocalPlaybackBackend(LocalPlaybackBackendPreference),
     OpenExternal(String),
     SaveSettings,
     SetSaved { uri: String, saved: bool },
@@ -886,7 +892,20 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
             load_route(state, Route::Artist { uri, title: item.title })
         }),
         EntityKind::Device => {
-            if item.restricted {
+            if item.id == LOCAL_DEVICE_PLACEHOLDER {
+                state.local_start_requested = true;
+                state.device_selected_by_user = true;
+                state.playback.device_name = Some("This computer".into());
+                state.overlay = None;
+                state.notice = Some(Notice {
+                    kind: NoticeKind::Pending,
+                    text: format!(
+                        "Starting {}…",
+                        state.local_playback_backend.label()
+                    ),
+                });
+                vec![Effect::StartLocalPlayback]
+            } else if item.restricted {
                 state.notice = Some(Notice { kind: NoticeKind::Error, text: "Spotify marks this device as restricted; commands cannot be transferred to it.".into() });
                 Vec::new()
             } else {
@@ -903,6 +922,7 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
                 })
             }
         }
+        EntityKind::Action if !item.available => Vec::new(),
         EntityKind::Action if item.id.starts_with("recent-search:") => {
             let query = item.title.clone();
             state.search_query.clone_from(&query);
@@ -1344,6 +1364,24 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
                 .map_or(0, |idx| (idx + 1) % VALUES.len());
             state.wide_breakpoint_width = VALUES[next_idx];
         }
+        "playback-backend" => {
+            if !cfg!(target_os = "windows") {
+                return Vec::new();
+            }
+            state.local_playback_backend = match state.local_playback_backend {
+                LocalPlaybackBackendPreference::SpotifyWeb => {
+                    LocalPlaybackBackendPreference::Librespot
+                }
+                LocalPlaybackBackendPreference::Librespot => {
+                    LocalPlaybackBackendPreference::SpotifyWeb
+                }
+            };
+            refresh_settings_page(state);
+            return vec![
+                Effect::ChangeLocalPlaybackBackend(state.local_playback_backend),
+                Effect::SaveSettings,
+            ];
+        }
         _ => return Vec::new(),
     }
     state.update_layout(state.terminal_size.0, state.terminal_size.1);
@@ -1384,6 +1422,9 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
             }
             "wide-breakpoint" => {
                 format!("Wide layout min width: {} cols", state.wide_breakpoint_width)
+            }
+            "playback-backend" => {
+                format!("Local playback engine: {}", state.local_playback_backend.label())
             }
             _ => item.title.clone(),
         };
@@ -1454,6 +1495,31 @@ pub fn general_settings_sections(state: &AppState) -> Vec<Section> {
 }
 
 #[must_use]
+pub fn playback_settings_sections(state: &AppState) -> Vec<Section> {
+    let mut backend = BrowseItem::message(
+        "playback-backend",
+        format!("Local playback engine: {}", state.local_playback_backend.label()),
+    );
+    backend.kind = EntityKind::Action;
+    backend.available = cfg!(target_os = "windows");
+    backend.subtitle = if cfg!(target_os = "windows") {
+        match state.local_playback_backend {
+            LocalPlaybackBackendPreference::SpotifyWeb => {
+                "Official Spotify Web Playback SDK · higher memory use".into()
+            }
+            LocalPlaybackBackendPreference::Librespot => {
+                "Lightweight native playback · unofficial Spotify implementation".into()
+            }
+        }
+    } else {
+        "Librespot is the only local playback engine available on this platform.".into()
+    };
+    backend.metadata =
+        "Local playback starts only when you choose This computer from Devices.".into();
+    vec![Section { title: "Local playback".into(), items: vec![backend] }]
+}
+
+#[must_use]
 pub fn shortcut_settings_sections(state: &AppState) -> Vec<Section> {
     let mut items = Vec::new();
     for &action in &ShortcutAction::ALL {
@@ -1475,10 +1541,12 @@ pub fn refresh_settings_page(state: &mut AppState) {
     state.page.title = "Settings".into();
     state.page.subtitle = match state.settings_tab {
         SettingsTab::General => "CLI appearance and interaction".into(),
+        SettingsTab::Playback => "Local playback engine".into(),
         SettingsTab::Shortcuts => "Configure keyboard shortcuts".into(),
     };
     state.page.sections = match state.settings_tab {
         SettingsTab::General => general_settings_sections(state),
+        SettingsTab::Playback => playback_settings_sections(state),
         SettingsTab::Shortcuts => shortcut_settings_sections(state),
     };
     state.page.state = crate::state::LoadState::Ready;
