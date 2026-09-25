@@ -1,0 +1,271 @@
+use std::{
+    sync::{Arc, Mutex, mpsc},
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
+use librespot_connect::{ConnectConfig, Spirc};
+use librespot_core::{
+    Session, SessionConfig,
+    authentication::Credentials,
+    config::DeviceType,
+};
+use librespot_playback::{
+    audio_backend,
+    config::{AudioFormat, PlayerConfig},
+    mixer::{self, MixerConfig},
+    player::Player,
+};
+use lspotify_core::{
+    AppError, DeviceId, ErrorKind, LocalPlayerCommand, LocalPlayerEvent, Result,
+};
+use rand::Rng as _;
+
+#[derive(Debug)]
+pub struct LibrespotLocalPlayer {
+    commands: mpsc::SyncSender<LocalPlayerCommand>,
+    events: Mutex<mpsc::Receiver<LocalPlayerEvent>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl LibrespotLocalPlayer {
+    /// Starts the lightweight coordinator thread. Spotify networking and audio are initialized
+    /// only after a `Connect` command is received.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker thread cannot be created.
+    pub fn start() -> Result<Self> {
+        let (commands, command_receiver) = mpsc::sync_channel(64);
+        let (event_sender, events) = mpsc::sync_channel(64);
+        let thread = thread::Builder::new()
+            .name("lspotify-librespot".into())
+            .spawn(move || run(command_receiver, event_sender))
+            .map_err(|error| AppError::new(ErrorKind::Unavailable, error.to_string()))?;
+        Ok(Self { commands, events: Mutex::new(events), thread: Mutex::new(Some(thread)) })
+    }
+
+    pub fn send(&self, command: LocalPlayerCommand) -> Result<()> {
+        self.commands.send(command).map_err(|_| {
+            AppError::new(ErrorKind::Unavailable, "librespot playback worker has stopped")
+        })
+    }
+
+    pub fn try_next_event(&self) -> Result<Option<LocalPlayerEvent>> {
+        self.events
+            .lock()
+            .map_err(|_| poisoned())?
+            .try_recv()
+            .ok()
+            .map_or(Ok(None), |event| Ok(Some(event)))
+    }
+
+    pub fn shutdown(&self) -> Result<()> {
+        let _ = self.commands.send(LocalPlayerCommand::Shutdown);
+        if let Some(thread) = self.thread.lock().map_err(|_| poisoned())?.take() {
+            let _ = thread.join();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LibrespotLocalPlayer {
+    fn drop(&mut self) {
+        let _ = self.commands.send(LocalPlayerCommand::Shutdown);
+        if let Ok(thread) = self.thread.get_mut()
+            && let Some(thread) = thread.take()
+        {
+            let _ = thread.join();
+        }
+    }
+}
+
+struct ActivePlayer {
+    session: Session,
+    spirc: Spirc,
+    _player: Arc<Player>,
+    spirc_task: tokio::task::JoinHandle<()>,
+}
+
+fn run(
+    commands: mpsc::Receiver<LocalPlayerCommand>,
+    events: mpsc::SyncSender<LocalPlayerEvent>,
+) {
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = events.try_send(LocalPlayerEvent::Unavailable);
+            tracing::error!(%error, "could not create librespot runtime");
+            return;
+        }
+    };
+    runtime.block_on(run_async(commands, events));
+}
+
+async fn run_async(
+    commands: mpsc::Receiver<LocalPlayerCommand>,
+    events: mpsc::SyncSender<LocalPlayerEvent>,
+) {
+    let mut access_token: Option<String> = None;
+    let mut active: Option<ActivePlayer> = None;
+
+    loop {
+        match commands.try_recv() {
+            Ok(LocalPlayerCommand::TokenUpdate { access_token: token }) => {
+                access_token = Some(token);
+            }
+            Ok(LocalPlayerCommand::Connect) => {
+                if let Some(player) = active.as_ref() {
+                    if let Err(error) = player.spirc.activate() {
+                        playback_error(&events, error.to_string());
+                    }
+                } else if let Some(token) = access_token.as_deref() {
+                    match connect(token).await {
+                        Ok(player) => {
+                            let device_id = player.session.device_id().to_owned();
+                            match DeviceId::parse(device_id) {
+                                Ok(device_id) => {
+                                    let _ = events.try_send(LocalPlayerEvent::Ready { device_id });
+                                    active = Some(player);
+                                }
+                                Err(error) => {
+                                    playback_error(&events, error.to_string());
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            playback_error(&events, error);
+                            let _ = events.try_send(LocalPlayerEvent::Unavailable);
+                        }
+                    }
+                } else {
+                    playback_error(&events, "Spotify access token is not available");
+                }
+            }
+            Ok(LocalPlayerCommand::Disconnect) => {
+                if let Some(player) = active.as_ref()
+                    && let Err(error) = player.spirc.disconnect(true)
+                {
+                    playback_error(&events, error.to_string());
+                }
+            }
+            Ok(LocalPlayerCommand::Play) => {
+                if let Some(player) = active.as_ref()
+                    && let Err(error) = player.spirc.play()
+                {
+                    playback_error(&events, error.to_string());
+                }
+            }
+            Ok(LocalPlayerCommand::Pause) => {
+                if let Some(player) = active.as_ref()
+                    && let Err(error) = player.spirc.pause()
+                {
+                    playback_error(&events, error.to_string());
+                }
+            }
+            Ok(LocalPlayerCommand::Seek { position_ms }) => {
+                if let Some(player) = active.as_ref() {
+                    let position = u32::try_from(position_ms).unwrap_or(u32::MAX);
+                    if let Err(error) = player.spirc.set_position_ms(position) {
+                        playback_error(&events, error.to_string());
+                    }
+                }
+            }
+            Ok(LocalPlayerCommand::Volume { value_milli }) => {
+                if let Some(player) = active.as_ref() {
+                    let value = u32::from(value_milli.min(1000));
+                    let volume = ((value * u32::from(u16::MAX)) / 1000) as u16;
+                    if let Err(error) = player.spirc.set_volume(volume) {
+                        playback_error(&events, error.to_string());
+                    }
+                }
+            }
+            Ok(LocalPlayerCommand::Shutdown) => {
+                shutdown_active(active.take());
+                break;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                shutdown_active(active.take());
+                break;
+            }
+        }
+
+        if active.as_ref().is_some_and(|player| player.spirc_task.is_finished()) {
+            shutdown_active(active.take());
+            let _ = events.try_send(LocalPlayerEvent::Unavailable);
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn connect(access_token: &str) -> std::result::Result<ActivePlayer, String> {
+    let mut session_config = SessionConfig::default();
+    session_config.device_id = random_device_id();
+
+    let session = Session::new(session_config, None);
+    let credentials = Credentials::with_access_token(access_token);
+
+    let mixer_builder =
+        mixer::find(None).ok_or_else(|| "librespot soft-volume mixer is unavailable".to_string())?;
+    let mixer = mixer_builder(MixerConfig::default()).map_err(|error| error.to_string())?;
+
+    let sink_builder =
+        audio_backend::find(None).ok_or_else(|| "librespot audio backend is unavailable".to_string())?;
+    let player = Player::new(
+        PlayerConfig::default(),
+        session.clone(),
+        mixer.get_soft_volume(),
+        move || sink_builder(None, AudioFormat::default()),
+    );
+
+    let connect_config = ConnectConfig {
+        name: "lspotify".into(),
+        device_type: DeviceType::Computer,
+        ..ConnectConfig::default()
+    };
+    let (spirc, spirc_task) =
+        Spirc::new(connect_config, session.clone(), credentials, Arc::clone(&player), mixer)
+            .await
+            .map_err(|error| error.to_string())?;
+    let spirc_task = tokio::spawn(spirc_task);
+
+    Ok(ActivePlayer { session, spirc, _player: player, spirc_task })
+}
+
+fn shutdown_active(active: Option<ActivePlayer>) {
+    if let Some(player) = active {
+        let _ = player.spirc.shutdown();
+        player.session.shutdown();
+        player.spirc_task.abort();
+    }
+}
+
+fn playback_error(events: &mpsc::SyncSender<LocalPlayerEvent>, message: impl Into<String>) {
+    let _ = events.try_send(LocalPlayerEvent::PlaybackError(format!(
+        "Librespot: {}",
+        message.into()
+    )));
+}
+
+fn random_device_id() -> String {
+    let bytes: [u8; 20] = rand::rng().random();
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn poisoned() -> AppError {
+    AppError::new(ErrorKind::Unexpected, "librespot player lock was poisoned")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_device_ids_fit_spotify_identifier_rules() {
+        let id = random_device_id();
+        assert_eq!(id.len(), 40);
+        assert!(DeviceId::parse(id).is_ok());
+    }
+}
