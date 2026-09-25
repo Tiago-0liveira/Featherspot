@@ -179,13 +179,4 @@ mod tests {
         assert_eq!(paths.cache, Path::new("portable").join("cache"));
         assert_eq!(paths.settings, Path::new("portable").join("settings.json"));
     }
-
-            let output = child.wait_with_output().expect("node execution");
-            assert!(
-                output.status.success(),
-                "node script failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    }
 }
