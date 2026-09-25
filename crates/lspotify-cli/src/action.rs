@@ -922,6 +922,7 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
                 })
             }
         }
+        EntityKind::Action if !item.available => Vec::new(),
         EntityKind::Action if item.id.starts_with("recent-search:") => {
             let query = item.title.clone();
             state.search_query.clone_from(&query);
