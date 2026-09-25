@@ -138,10 +138,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
           cargo build --locked --release -p lspotify-cli --bin lspotify
           mkdir -p dist
           cp target/release/lspotify dist/lspotify-linux-x86_64
-          chmod +x dist/lspotify-linux-x86_64
+          cp scripts/install/install.sh dist/install.sh
+          cp THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
+          chmod +x dist/lspotify-linux-x86_64 dist/install.sh
 
       - name: Build macOS release
         if: matrix.id == 'macos'
@@ -242,7 +246,8 @@ jobs:
             -ReleaseTag $env:RELEASE_TAG `
             -OutputDir dist
 
-          Copy-Item install.ps1, install.cmd dist/
+          Copy-Item scripts/install/install.ps1 dist/install.ps1
+          Copy-Item scripts/install/install.cmd dist/install.cmd
 
           Remove-Item dist/portable -Recurse -Force
 
@@ -287,6 +292,8 @@ jobs:
             "lspotify-${RELEASE_TAG}-player-host.cdx.json"
             "install.ps1"
             "install.cmd"
+            "install.sh"
+            "THIRD_PARTY_NOTICES.md"
           )
 
           for file in "${expected[@]}"; do
