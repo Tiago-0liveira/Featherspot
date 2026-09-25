@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 lspotify-core = { path = "../lspotify-core" }
+lspotify-playback = { path = "../lspotify-playback" }
 open.workspace = true
 tracing.workspace = true
 
@@ -14,7 +15,6 @@ tracing.workspace = true
 keyring.workspace = true
 serde_json.workspace = true
 wry.workspace = true
-lspotify-playback = { path = "../lspotify-playback" }
 
 [dev-dependencies]
 tempfile.workspace = true
