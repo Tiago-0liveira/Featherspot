@@ -623,27 +623,30 @@ fn render_content_header(frame: &mut Frame<'_>, area: Rect, state: &AppState, hi
             ]));
         }
         Route::Settings => {
-            let general_style = if state.settings_tab == SettingsTab::General {
-                Style::default().bg(LAVENDER).fg(INK)
-            } else {
-                Style::default().fg(MUTED)
-            };
-            let shortcuts_style = if state.settings_tab == SettingsTab::Shortcuts {
-                Style::default().bg(LAVENDER).fg(INK)
-            } else {
-                Style::default().fg(MUTED)
+            let tab_style = |tab| {
+                if state.settings_tab == tab {
+                    Style::default().bg(LAVENDER).fg(INK)
+                } else {
+                    Style::default().fg(MUTED)
+                }
             };
             lines.push(Line::from(vec![
-                Span::styled(" General ", general_style),
+                Span::styled(" General ", tab_style(SettingsTab::General)),
                 Span::raw(" "),
-                Span::styled(" Shortcuts ", shortcuts_style),
+                Span::styled(" Playback ", tab_style(SettingsTab::Playback)),
+                Span::raw(" "),
+                Span::styled(" Shortcuts ", tab_style(SettingsTab::Shortcuts)),
             ]));
             hits.add(
                 Rect { x: area.x + padding, y: area.y + 1, width: 9, height: 1 },
                 HitTarget::SettingsTab(SettingsTab::General),
             );
             hits.add(
-                Rect { x: area.x + padding + 10, y: area.y + 1, width: 11, height: 1 },
+                Rect { x: area.x + padding + 10, y: area.y + 1, width: 10, height: 1 },
+                HitTarget::SettingsTab(SettingsTab::Playback),
+            );
+            hits.add(
+                Rect { x: area.x + padding + 21, y: area.y + 1, width: 11, height: 1 },
                 HitTarget::SettingsTab(SettingsTab::Shortcuts),
             );
         }
