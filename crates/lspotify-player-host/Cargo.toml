@@ -10,11 +10,13 @@ name = "lspotify-player-host"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui.workspace = true
 lspotify-core = { path = "../lspotify-core" }
 lspotify-platform = { path = "../lspotify-platform" }
-gpui.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true
