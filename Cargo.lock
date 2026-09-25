@@ -3845,6 +3845,7 @@ name = "lspotify-core"
 version = "0.1.6"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.16",
 ]
 

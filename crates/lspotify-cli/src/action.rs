@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
+use crate::shortcuts::{KeyBinding, ShortcutAction};
 use crate::state::{
     AppState, BrowseItem, ContextAction, EntityKind, FocusRegion, LibraryTab, Notice, NoticeKind,
-    Overlay, PageState, Route, SearchFilter, actions_for,
+    Overlay, PageState, Route, SearchFilter, Section, SettingsTab, actions_for,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +76,7 @@ pub enum Action {
 pub enum HitTarget {
     Sidebar(usize),
     TopNav(Route),
+    SettingsTab(SettingsTab),
     PlayerArtist { title: String, uri: String },
     PlayerAlbum { title: String, uri: String },
     PlayerDevice,
@@ -134,99 +136,162 @@ impl HitMap {
     }
 }
 
+fn handle_shortcut_capture_key(
+    state: &mut AppState,
+    action: ShortcutAction,
+    conflict: Option<(KeyBinding, ShortcutAction)>,
+    key: KeyEvent,
+) -> Vec<Effect> {
+    if let Some((new_binding, _)) = conflict {
+        if state.shortcuts.matches_action(ShortcutAction::Activate, &key) {
+            state.shortcuts.force_assign(action, new_binding);
+            state.overlay = None;
+            refresh_settings_page(state);
+            vec![Effect::SaveSettings]
+        } else if state.shortcuts.matches_action(ShortcutAction::Cancel, &key) {
+            state.overlay = None;
+            Vec::new()
+        } else {
+            Vec::new()
+        }
+    } else if state.shortcuts.matches_action(ShortcutAction::Cancel, &key) {
+        state.overlay = None;
+        Vec::new()
+    } else {
+        match key.code {
+            KeyCode::Delete => {
+                state.shortcuts.remove_binding(action);
+                state.overlay = None;
+                refresh_settings_page(state);
+                vec![Effect::SaveSettings]
+            }
+            KeyCode::Modifier(_) => Vec::new(),
+            _ => {
+                let new_binding = KeyBinding::from_event(&key);
+                if state
+                    .shortcuts
+                    .get_bindings(action)
+                    .iter()
+                    .any(|b| b.conflicts_with(&new_binding))
+                {
+                    state.overlay = None;
+                    return Vec::new();
+                }
+                if let Some(conflicting) = state.shortcuts.find_conflict(action, &new_binding) {
+                    state.overlay = Some(Overlay::ShortcutCapture {
+                        action,
+                        conflict: Some((new_binding, conflicting)),
+                    });
+                    Vec::new()
+                } else {
+                    state.shortcuts.force_assign(action, new_binding);
+                    state.overlay = None;
+                    refresh_settings_page(state);
+                    vec![Effect::SaveSettings]
+                }
+            }
+        }
+    }
+}
+
 pub fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     state.startup_focus_pending = false;
-    // Exit precedes text entry and overlays. Lower-case q remains the Queue shortcut.
-    let action = if matches!(key.code, KeyCode::Char('x' | 'Q'))
-        || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::SHIFT))
-        || (matches!(key.code, KeyCode::Char('c' | 'q'))
-            && key.modifiers.contains(KeyModifiers::CONTROL))
-    {
-        Action::Quit
-    } else if state.text_entry
+    // Exit precedes shortcut capture, text entry, and overlays.
+    if state.shortcuts.is_quit(&key) {
+        return reduce(state, Action::Quit);
+    }
+    if let Some(Overlay::ShortcutCapture { action, conflict }) = state.overlay.clone() {
+        return handle_shortcut_capture_key(state, action, conflict, key);
+    }
+    let action = if state.text_entry
         || matches!(
             state.overlay,
             Some(Overlay::Help { editing: true, .. } | Overlay::RenamePlaylist { .. })
-        )
-    {
-        match key.code {
-            KeyCode::Esc => Action::Cancel,
-            KeyCode::Backspace => Action::Backspace,
-            KeyCode::Enter => Action::SubmitText,
-            KeyCode::Down if state.overlay.is_none() => {
-                state.text_entry = false;
-                state.focus = FocusRegion::Content;
-                if state.page.route == Route::Search && state.search_query.is_empty() {
-                    state.populate_recent_searches();
+        ) {
+        if key.code == KeyCode::Backspace {
+            Action::Backspace
+        } else if state.shortcuts.matches_action(ShortcutAction::Cancel, &key) {
+            Action::Cancel
+        } else if state.shortcuts.matches_action(ShortcutAction::Activate, &key) {
+            Action::SubmitText
+        } else {
+            match key.code {
+                KeyCode::Down if state.overlay.is_none() => {
+                    state.text_entry = false;
+                    state.focus = FocusRegion::Content;
+                    if state.page.route == Route::Search && state.search_query.is_empty() {
+                        state.populate_recent_searches();
+                    }
+                    return Vec::new();
                 }
-                return Vec::new();
-            }
-            KeyCode::Tab if state.overlay.is_none() => {
-                state.text_entry = false;
-                if state.page.route == Route::Search && state.search_query.is_empty() {
-                    state.populate_recent_searches();
+                KeyCode::Tab if state.overlay.is_none() => {
+                    state.text_entry = false;
+                    if state.page.route == Route::Search && state.search_query.is_empty() {
+                        state.populate_recent_searches();
+                    }
+                    Action::FocusNext(key.modifiers.contains(KeyModifiers::SHIFT))
                 }
-                Action::FocusNext(key.modifiers.contains(KeyModifiers::SHIFT))
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Action::Insert(ch)
+                }
+                _ => return Vec::new(),
             }
-            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Action::Insert(ch)
-            }
-            _ => return Vec::new(),
         }
     } else {
-        match key.code {
-            KeyCode::Up
-                if state.page.route == Route::Search
-                    && state.focus == FocusRegion::Content
-                    && state.page.cursor.selected == 0 =>
-            {
-                state.text_entry = true;
-                if state.search_query.is_empty() {
-                    state.populate_recent_searches();
-                }
-                return Vec::new();
+        let resolved = state.shortcuts.resolve(&key, &state.page.route, has_detail_actions(state));
+        if matches!(resolved, Some(ShortcutAction::MoveUp))
+            && state.page.route == Route::Search
+            && state.focus == FocusRegion::Content
+            && state.page.cursor.selected == 0
+        {
+            state.text_entry = true;
+            if state.search_query.is_empty() {
+                state.populate_recent_searches();
             }
-            KeyCode::Tab => Action::FocusNext(key.modifiers.contains(KeyModifiers::SHIFT)),
-            KeyCode::Up | KeyCode::Char('k') => Action::Move(-1),
-            KeyCode::Down | KeyCode::Char('j') => Action::Move(1),
-            KeyCode::PageUp => Action::Page(-1),
-            KeyCode::PageDown => Action::Page(1),
-            KeyCode::Home => Action::Home,
-            KeyCode::End => Action::End,
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => Action::Seek(-5_000),
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => Action::Seek(5_000),
-            KeyCode::Left => Action::LocalLeft,
-            KeyCode::Right => Action::LocalRight,
-            KeyCode::Enter => Action::Activate,
-            KeyCode::Esc | KeyCode::Backspace => Action::Cancel,
-            KeyCode::Char('1') => Action::Navigate(Route::Home),
-            KeyCode::Char('2') => Action::Navigate(Route::Search),
-            KeyCode::Char('3') => Action::Navigate(Route::Library),
-            KeyCode::Char('4') => Action::Navigate(Route::Settings),
-            KeyCode::Char('5' | 'q') => Action::Navigate(Route::Queue),
-            KeyCode::Char('/') => Action::StartSearch,
-            KeyCode::Char('f') if state.page.route == Route::Library => Action::StartFilter,
-            KeyCode::Char(' ') => Action::TogglePlayback,
-            KeyCode::Char('[') => Action::Previous,
-            KeyCode::Char(']') => Action::Next,
-            KeyCode::Char('-') => Action::Volume(-5),
-            KeyCode::Char('p' | 'P') if has_detail_actions(state) => Action::PlayDetailContext,
-            KeyCode::Char('S') if has_detail_actions(state) => Action::PlayDetailContextWithShuffle,
-            KeyCode::Char('s')
-                if key.modifiers.contains(KeyModifiers::SHIFT) && has_detail_actions(state) =>
-            {
-                Action::PlayDetailContextWithShuffle
-            }
-            KeyCode::Char('o' | 'O') if has_detail_actions(state) => Action::OpenDetailSpotify,
-            KeyCode::Char('s') => Action::Shuffle,
-            KeyCode::Char('r') => Action::Repeat,
-            KeyCode::Char('d') => Action::Navigate(Route::Devices),
-            KeyCode::Char('a') => Action::Enqueue,
-            KeyCode::Char('l') => Action::ToggleSaved,
-            KeyCode::Char('?') => Action::ToggleHelp,
-            KeyCode::Char('i') => Action::Inspect,
-            KeyCode::Char('m') => Action::OpenActions,
-            _ => return Vec::new(),
+            return Vec::new();
+        }
+        let Some(shortcut) = resolved else {
+            return Vec::new();
+        };
+        match shortcut {
+            ShortcutAction::Quit => Action::Quit,
+            ShortcutAction::Home => Action::Navigate(Route::Home),
+            ShortcutAction::Search => Action::Navigate(Route::Search),
+            ShortcutAction::Library => Action::Navigate(Route::Library),
+            ShortcutAction::Settings => Action::Navigate(Route::Settings),
+            ShortcutAction::Queue => Action::Navigate(Route::Queue),
+            ShortcutAction::Devices => Action::Navigate(Route::Devices),
+            ShortcutAction::FocusNext => Action::FocusNext(false),
+            ShortcutAction::FocusPrevious => Action::FocusNext(true),
+            ShortcutAction::MoveUp => Action::Move(-1),
+            ShortcutAction::MoveDown => Action::Move(1),
+            ShortcutAction::PageUp => Action::Page(-1),
+            ShortcutAction::PageDown => Action::Page(1),
+            ShortcutAction::CursorHome => Action::Home,
+            ShortcutAction::CursorEnd => Action::End,
+            ShortcutAction::PreviousTab => Action::LocalLeft,
+            ShortcutAction::NextTab => Action::LocalRight,
+            ShortcutAction::Activate => Action::Activate,
+            ShortcutAction::Cancel => Action::Cancel,
+            ShortcutAction::StartSearch => Action::StartSearch,
+            ShortcutAction::StartFilter => Action::StartFilter,
+            ShortcutAction::TogglePlayback => Action::TogglePlayback,
+            ShortcutAction::PreviousTrack => Action::Previous,
+            ShortcutAction::NextTrack => Action::Next,
+            ShortcutAction::SeekBackward => Action::Seek(-5_000),
+            ShortcutAction::SeekForward => Action::Seek(5_000),
+            ShortcutAction::VolumeDown => Action::Volume(-5),
+            ShortcutAction::VolumeUp => Action::Volume(5),
+            ShortcutAction::Shuffle => Action::Shuffle,
+            ShortcutAction::Repeat => Action::Repeat,
+            ShortcutAction::AddToQueue => Action::Enqueue,
+            ShortcutAction::ToggleSaved => Action::ToggleSaved,
+            ShortcutAction::OpenActions => Action::OpenActions,
+            ShortcutAction::DetailPlay => Action::PlayDetailContext,
+            ShortcutAction::DetailShuffle => Action::PlayDetailContextWithShuffle,
+            ShortcutAction::DetailOpenSpotify => Action::OpenDetailSpotify,
+            ShortcutAction::ToggleHelp => Action::ToggleHelp,
+            ShortcutAction::Inspect => Action::Inspect,
         }
     };
     reduce(state, action)
@@ -273,6 +338,10 @@ pub fn dispatch_mouse(
                 }
                 Some(HitTarget::PlayerToggle) => Some(Action::TogglePlayback),
                 Some(HitTarget::TopNav(route)) => Some(Action::Navigate(route)),
+                Some(HitTarget::SettingsTab(tab)) => {
+                    switch_settings_tab(state, tab);
+                    return Vec::new();
+                }
                 Some(HitTarget::PlayerArtist { title, uri }) => {
                     Some(Action::Navigate(Route::Artist { title, uri }))
                 }
@@ -559,17 +628,24 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
             vec![Effect::Repeat(state.playback.repeat)]
         }
         Action::Enqueue => enqueue_selected(state),
-        Action::Refresh => vec![Effect::LoadPage {
-            route: state.page.route.clone(),
-            generation: state.generation,
-            offset: 0,
-            query: state.search_query.clone(),
-            tab: if state.page.route == Route::Library {
-                Some(state.page.library_tab)
+        Action::Refresh => {
+            if state.page.route == Route::Settings {
+                refresh_settings_page(state);
+                Vec::new()
             } else {
-                None
-            },
-        }],
+                vec![Effect::LoadPage {
+                    route: state.page.route.clone(),
+                    generation: state.generation,
+                    offset: 0,
+                    query: state.search_query.clone(),
+                    tab: if state.page.route == Route::Library {
+                        Some(state.page.library_tab)
+                    } else {
+                        None
+                    },
+                }]
+            }
+        }
         Action::PlayDetailContext => detail_context_uri(state).map_or_else(Vec::new, |uri| {
             vec![Effect::PlayTrack { uri, device_id: state.target_device_id() }]
         }),
@@ -642,6 +718,11 @@ fn load_route(state: &mut AppState, route: Route) -> Vec<Effect> {
     }
 
     if is_fresh && route != Route::Queue && route != Route::Devices {
+        return Vec::new();
+    }
+
+    if route == Route::Settings {
+        refresh_settings_page(state);
         return Vec::new();
     }
 
@@ -743,6 +824,12 @@ fn cycle_local(state: &mut AppState, right: bool) -> Vec<Effect> {
             };
             state.page.search_filter = SearchFilter::ALL[index];
             state.page.cursor = crate::state::ListCursor::default();
+            Vec::new()
+        }
+        Route::Settings => {
+            let next_tab =
+                if right { state.settings_tab.next() } else { state.settings_tab.previous() };
+            switch_settings_tab(state, next_tab);
             Vec::new()
         }
         _ => Vec::new(),
@@ -1164,10 +1251,50 @@ fn activate_action_menu(
             });
             url.map_or_else(Vec::new, |url| vec![Effect::OpenExternal(url)])
         }
+        ContextAction::EditShortcut => {
+            if let Some(action_id) = item.id.strip_prefix("shortcut:")
+                && let Some(action) = ShortcutAction::from_id(action_id)
+            {
+                state.overlay = Some(Overlay::ShortcutCapture { action, conflict: None });
+            }
+            Vec::new()
+        }
+        ContextAction::RemoveShortcutBinding => {
+            if let Some(action_id) = item.id.strip_prefix("shortcut:")
+                && let Some(action) = ShortcutAction::from_id(action_id)
+            {
+                state.shortcuts.remove_binding(action);
+                refresh_settings_page(state);
+                return vec![Effect::SaveSettings];
+            }
+            Vec::new()
+        }
+        ContextAction::ResetShortcutToDefault => {
+            if let Some(action_id) = item.id.strip_prefix("shortcut:")
+                && let Some(action) = ShortcutAction::from_id(action_id)
+            {
+                state.shortcuts.restore_default(action);
+                refresh_settings_page(state);
+                return vec![Effect::SaveSettings];
+            }
+            Vec::new()
+        }
+        ContextAction::ResetAllShortcutsToDefault => {
+            state.shortcuts.restore_all_defaults();
+            refresh_settings_page(state);
+            vec![Effect::SaveSettings]
+        }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
+    if let Some(action_id) = id.strip_prefix("shortcut:")
+        && let Some(action) = ShortcutAction::from_id(action_id)
+    {
+        state.overlay = Some(Overlay::ShortcutCapture { action, conflict: None });
+        return Vec::new();
+    }
     match id {
         "artwork" => {
             state.artwork = match state.artwork {
@@ -1267,6 +1394,108 @@ fn activate_setting(state: &mut AppState, id: &str) -> Vec<Effect> {
     vec![Effect::SaveSettings]
 }
 
+fn setting_item(id: &str, title: &str) -> BrowseItem {
+    let mut item = BrowseItem::message(id, title);
+    item.kind = EntityKind::Action;
+    item.available = true;
+    item
+}
+
+#[must_use]
+pub fn general_settings_sections(state: &AppState) -> Vec<Section> {
+    vec![Section {
+        title: "Terminal".into(),
+        items: vec![
+            setting_item("artwork", &format!("Artwork: {:?}", state.artwork)),
+            setting_item(
+                "artwork-under-overlays",
+                &format!(
+                    "Artwork behind menus: {}",
+                    if state.artwork_under_overlays { "enabled" } else { "disabled" }
+                ),
+            ),
+            setting_item(
+                "mouse",
+                &format!("Mouse input: {}", if state.mouse { "enabled" } else { "disabled" }),
+            ),
+            setting_item(
+                "wide-queue",
+                &format!(
+                    "Wide-screen queue: {}",
+                    if state.wide_queue { "enabled" } else { "disabled" }
+                ),
+            ),
+            setting_item(
+                "side-player-height",
+                &if state.side_player_max_height == 0 {
+                    "Side player max height: Disabled".into()
+                } else {
+                    format!("Side player max height: {} rows", state.side_player_max_height)
+                },
+            ),
+            setting_item(
+                "side-player-width",
+                &format!("Side player min width: {} cols", state.side_player_min_width),
+            ),
+            setting_item(
+                "stacked-queue-height",
+                &if state.stacked_queue_min_height > 500 {
+                    "Stacked queue min height: Disabled".into()
+                } else {
+                    format!("Stacked queue min height: {} rows", state.stacked_queue_min_height)
+                },
+            ),
+            setting_item(
+                "wide-breakpoint",
+                &format!("Wide layout min width: {} cols", state.wide_breakpoint_width),
+            ),
+        ],
+    }]
+}
+
+#[must_use]
+pub fn shortcut_settings_sections(state: &AppState) -> Vec<Section> {
+    let mut items = Vec::new();
+    for &action in &ShortcutAction::ALL {
+        let mut item =
+            BrowseItem::message(format!("shortcut:{}", action.id()), action.display_name());
+        item.kind = EntityKind::Action;
+        item.subtitle = state.shortcuts.list_label(action, ", ");
+        item.metadata = format!("Scope: {}", action.scope());
+        item.available = true;
+        items.push(item);
+    }
+    vec![Section { title: "Keybindings".into(), items }]
+}
+
+pub fn refresh_settings_page(state: &mut AppState) {
+    if state.page.route != Route::Settings {
+        return;
+    }
+    state.page.title = "Settings".into();
+    state.page.subtitle = match state.settings_tab {
+        SettingsTab::General => "CLI appearance and interaction".into(),
+        SettingsTab::Shortcuts => "Configure keyboard shortcuts".into(),
+    };
+    state.page.sections = match state.settings_tab {
+        SettingsTab::General => general_settings_sections(state),
+        SettingsTab::Shortcuts => shortcut_settings_sections(state),
+    };
+    state.page.state = crate::state::LoadState::Ready;
+    let len = state.page.flattened().len();
+    if state.page.cursor.selected >= len {
+        state.page.cursor.selected = len.saturating_sub(1);
+    }
+    state.page_cache.insert(Route::Settings.key(), (state.page.clone(), Instant::now()));
+}
+
+pub fn switch_settings_tab(state: &mut AppState, tab: SettingsTab) {
+    state.settings_tab = tab;
+    state.page.settings_tab = tab;
+    state.page.cursor = crate::state::ListCursor::default();
+    refresh_settings_page(state);
+}
+
 fn enqueue_selected(state: &mut AppState) -> Vec<Effect> {
     let Some(item) = state.selected_item() else {
         return Vec::new();
@@ -1311,7 +1540,9 @@ fn backspace(state: &mut AppState) {
 }
 
 fn submit_text(state: &mut AppState) -> Vec<Effect> {
-    if let Some(Overlay::RenamePlaylist { playlist_id, name }) = state.overlay.take() {
+    if matches!(state.overlay, Some(Overlay::RenamePlaylist { .. }))
+        && let Some(Overlay::RenamePlaylist { playlist_id, name }) = state.overlay.take()
+    {
         state.text_entry = false;
         let trimmed = name.trim().to_string();
         if !trimmed.is_empty() {
@@ -1323,7 +1554,8 @@ fn submit_text(state: &mut AppState) -> Vec<Effect> {
         }
         return Vec::new();
     }
-    if matches!(state.overlay, Some(Overlay::Help { .. })) {
+    if let Some(Overlay::Help { editing, .. }) = &mut state.overlay {
+        *editing = false;
         state.text_entry = false;
         return Vec::new();
     }
@@ -1446,6 +1678,13 @@ mod tests {
             (false, Some(Overlay::DevicePicker)),
             (false, Some(Overlay::Menu)),
             (true, Some(Overlay::Help { query: "query".into(), editing: true })),
+            (
+                false,
+                Some(Overlay::ShortcutCapture {
+                    action: ShortcutAction::TogglePlayback,
+                    conflict: None,
+                }),
+            ),
         ];
 
         for key_event in quit_keys {
@@ -1862,6 +2101,7 @@ mod tests {
             state: LoadState::Ready,
             filter: String::new(),
             library_tab: LibraryTab::Albums,
+            settings_tab: SettingsTab::General,
             search_filter: SearchFilter::All,
             next_offset: None,
             loading_more: false,
@@ -2551,5 +2791,219 @@ mod tests {
         assert!(!state.artwork_under_overlays);
         assert_eq!(state.page.sections[0].items[0].title, "Artwork behind menus: disabled");
         assert_eq!(effects2, vec![Effect::SaveSettings]);
+    }
+
+    #[test]
+    fn custom_binding_triggers_action_and_old_stops() {
+        let mut state = AppState::default();
+        let space_key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        let p_key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+
+        assert_eq!(dispatch_key(&mut state, space_key), vec![Effect::TogglePlayback]);
+        assert!(dispatch_key(&mut state, p_key).is_empty());
+
+        state.shortcuts.force_assign(
+            crate::shortcuts::ShortcutAction::TogglePlayback,
+            crate::shortcuts::KeyBinding::parse("p").unwrap(),
+        );
+
+        assert_eq!(dispatch_key(&mut state, p_key), vec![Effect::TogglePlayback]);
+        assert!(dispatch_key(&mut state, space_key).is_empty());
+    }
+
+    #[test]
+    fn global_quit_works_in_text_entry_and_overlays() {
+        let mut state = AppState::default();
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let shift_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT);
+        let lower_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+
+        // In text entry
+        state.page.route = Route::Search;
+        state.text_entry = true;
+        dispatch_key(&mut state, ctrl_c);
+        assert!(state.quit);
+
+        state.quit = false;
+        state.text_entry = true;
+        dispatch_key(&mut state, shift_q);
+        assert!(state.quit);
+
+        state.quit = false;
+        state.text_entry = true;
+        let effects = dispatch_key(&mut state, lower_q);
+        assert!(effects.is_empty());
+        assert_eq!(state.search_query, "q");
+        assert!(!state.quit);
+
+        // In an overlay
+        state.text_entry = false;
+        state.overlay = Some(crate::state::Overlay::Help { query: String::new(), editing: false });
+        dispatch_key(&mut state, ctrl_c);
+        assert!(state.quit);
+    }
+
+    #[test]
+    fn plus_and_minus_perform_volume_controls() {
+        let mut state = AppState::default();
+        let initial_volume = state.playback.volume;
+        let plus = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE);
+        let minus = KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE);
+
+        let effects_plus = dispatch_key(&mut state, plus);
+        assert_eq!(effects_plus, vec![Effect::Volume(initial_volume.saturating_add(5).min(100))]);
+
+        let effects_minus = dispatch_key(&mut state, minus);
+        assert_eq!(effects_minus, vec![Effect::Volume(initial_volume)]);
+    }
+
+    #[test]
+    fn shortcut_capture_and_reassignment_flow() {
+        let mut state = AppState::default();
+        let effects = activate_setting(&mut state, "shortcut:toggle_playback");
+        assert!(effects.is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(crate::state::Overlay::ShortcutCapture {
+                action: crate::shortcuts::ShortcutAction::TogglePlayback,
+                conflict: None,
+            })
+        ));
+
+        let bracket = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE);
+        assert!(dispatch_key(&mut state, bracket).is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(crate::state::Overlay::ShortcutCapture {
+                action: crate::shortcuts::ShortcutAction::TogglePlayback,
+                conflict: Some(_),
+            })
+        ));
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let save_effects = dispatch_key(&mut state, enter);
+        assert_eq!(save_effects, vec![Effect::SaveSettings]);
+        assert!(state.overlay.is_none());
+        assert_eq!(
+            state.shortcuts.primary_canonical(crate::shortcuts::ShortcutAction::TogglePlayback),
+            "]"
+        );
+        assert!(
+            state.shortcuts.get_bindings(crate::shortcuts::ShortcutAction::NextTrack).is_empty()
+        );
+    }
+
+    #[test]
+    fn shortcut_capture_respects_configured_quit_cancel_activate() {
+        let mut state = AppState::default();
+
+        // Remap Cancel from Esc to 'z', and Activate from Enter to 'a'
+        state.shortcuts.force_assign(
+            crate::shortcuts::ShortcutAction::Cancel,
+            crate::shortcuts::KeyBinding::parse("z").unwrap(),
+        );
+        state.shortcuts.force_assign(
+            crate::shortcuts::ShortcutAction::Activate,
+            crate::shortcuts::KeyBinding::parse("a").unwrap(),
+        );
+
+        // 1. In capture mode, pressing configured Cancel ('z') cancels and closes overlay
+        state.overlay = Some(crate::state::Overlay::ShortcutCapture {
+            action: crate::shortcuts::ShortcutAction::TogglePlayback,
+            conflict: None,
+        });
+        let z_key = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
+        let effects = dispatch_key(&mut state, z_key);
+        assert!(effects.is_empty());
+        assert!(state.overlay.is_none());
+        assert_ne!(
+            state.shortcuts.get_bindings(crate::shortcuts::ShortcutAction::TogglePlayback),
+            &[crate::shortcuts::KeyBinding::parse("z").unwrap()]
+        );
+
+        // 2. In conflict mode, pressing configured Cancel ('z') cancels without reassignment
+        let new_binding = crate::shortcuts::KeyBinding::parse("]").unwrap();
+        state.overlay = Some(crate::state::Overlay::ShortcutCapture {
+            action: crate::shortcuts::ShortcutAction::TogglePlayback,
+            conflict: Some((new_binding, crate::shortcuts::ShortcutAction::NextTrack)),
+        });
+        let effects = dispatch_key(&mut state, z_key);
+        assert!(effects.is_empty());
+        assert!(state.overlay.is_none());
+        assert_ne!(
+            state.shortcuts.get_bindings(crate::shortcuts::ShortcutAction::TogglePlayback),
+            &[new_binding]
+        );
+
+        // 3. In conflict mode, pressing configured Activate ('a') confirms reassignment
+        state.overlay = Some(crate::state::Overlay::ShortcutCapture {
+            action: crate::shortcuts::ShortcutAction::TogglePlayback,
+            conflict: Some((new_binding, crate::shortcuts::ShortcutAction::NextTrack)),
+        });
+        let a_key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        let save_effects = dispatch_key(&mut state, a_key);
+        assert_eq!(save_effects, vec![Effect::SaveSettings]);
+        assert!(state.overlay.is_none());
+        assert_eq!(
+            state.shortcuts.get_bindings(crate::shortcuts::ShortcutAction::TogglePlayback),
+            &[new_binding]
+        );
+
+        // 4. Global Quit works during capture mode
+        state.overlay = Some(crate::state::Overlay::ShortcutCapture {
+            action: crate::shortcuts::ShortcutAction::TogglePlayback,
+            conflict: None,
+        });
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        dispatch_key(&mut state, ctrl_c);
+        assert!(state.quit);
+    }
+
+    #[test]
+    fn text_entry_respects_configured_activate_and_cancel() {
+        let mut state = AppState::default();
+
+        // Remap Cancel to Ctrl+X and Activate to Ctrl+O
+        let cancel_key =
+            crate::shortcuts::KeyBinding::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        let activate_key =
+            crate::shortcuts::KeyBinding::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        state.shortcuts.force_assign(crate::shortcuts::ShortcutAction::Cancel, cancel_key);
+        state.shortcuts.force_assign(crate::shortcuts::ShortcutAction::Activate, activate_key);
+
+        // 1. Rename Playlist overlay: Cancel closes overlay
+        state.overlay = Some(crate::state::Overlay::RenamePlaylist {
+            playlist_id: "p1".into(),
+            name: "Initial".into(),
+        });
+        let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        dispatch_key(&mut state, ctrl_x);
+        assert!(state.overlay.is_none());
+
+        // 2. Rename Playlist overlay: typing characters and submitting with Activate
+        state.overlay = Some(crate::state::Overlay::RenamePlaylist {
+            playlist_id: "p1".into(),
+            name: "My".into(),
+        });
+        dispatch_key(&mut state, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        dispatch_key(&mut state, KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE));
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let effects = dispatch_key(&mut state, ctrl_o);
+        assert_eq!(
+            effects,
+            vec![Effect::RenamePlaylist { playlist_id: "p1".into(), new_name: "My P".into() }]
+        );
+        assert!(state.overlay.is_none());
+
+        // 3. Help overlay: editing mode stops editing on Activate and closes on Cancel
+        state.overlay = Some(crate::state::Overlay::Help { query: "vol".into(), editing: true });
+        state.text_entry = true;
+        dispatch_key(&mut state, ctrl_o);
+        assert!(matches!(state.overlay, Some(crate::state::Overlay::Help { editing: false, .. })));
+        assert!(!state.text_entry);
+
+        // Cancel closes Help overlay
+        dispatch_key(&mut state, ctrl_x);
+        assert!(state.overlay.is_none());
     }
 }
