@@ -494,43 +494,62 @@ fn load_page(
         }
         Route::Devices => {
             page.title = "Devices".into();
-            page.subtitle = "Selection is used by subsequent playback commands".into();
-            page.sections = vec![Section {
-                title: "Spotify Connect".into(),
-                items: api
-                    .devices(token)?
-                    .into_iter()
-                    .map(|device| BrowseItem {
-                        id: device.id.clone(),
-                        kind: EntityKind::Device,
-                        title: format!(
-                            "{}{}",
-                            device.name,
-                            if device.active { " · active" } else { "" }
-                        ),
-                        subtitle: if device.restricted {
-                            format!("{} · restricted", device.kind)
-                        } else {
-                            device.kind
-                        },
-                        metadata: if device.restricted {
-                            "Spotify reports that this device cannot accept remote commands.".into()
-                        } else {
-                            "Enter selects this device for playback.".into()
-                        },
-                        uri: Some(device.id),
-                        external_url: None,
-                        artwork_url: None,
-                        artists: Vec::new(),
-                        album: None,
-                        duration_ms: None,
-                        available: !device.restricted,
-                        saved: None,
-                        context: None,
-                        restricted: device.restricted,
-                    })
-                    .collect(),
-            }];
+            page.subtitle = "Choose local playback or any Spotify Connect device".into();
+            let local = BrowseItem {
+                id: crate::action::LOCAL_DEVICE_PLACEHOLDER.into(),
+                kind: EntityKind::Device,
+                title: "This computer".into(),
+                subtitle: "Local playback · starts only when selected".into(),
+                metadata: "Uses the local playback engine configured in Settings.".into(),
+                uri: Some(crate::action::LOCAL_DEVICE_PLACEHOLDER.into()),
+                external_url: None,
+                artwork_url: None,
+                artists: Vec::new(),
+                album: None,
+                duration_ms: None,
+                available: true,
+                saved: None,
+                context: None,
+                restricted: false,
+            };
+            let remote = api
+                .devices(token)?
+                .into_iter()
+                .filter(|device| device.name != "lspotify")
+                .map(|device| BrowseItem {
+                    id: device.id.clone(),
+                    kind: EntityKind::Device,
+                    title: format!(
+                        "{}{}",
+                        device.name,
+                        if device.active { " · active" } else { "" }
+                    ),
+                    subtitle: if device.restricted {
+                        format!("{} · restricted", device.kind)
+                    } else {
+                        device.kind
+                    },
+                    metadata: if device.restricted {
+                        "Spotify reports that this device cannot accept remote commands.".into()
+                    } else {
+                        "Enter selects this device for playback.".into()
+                    },
+                    uri: Some(device.id),
+                    external_url: None,
+                    artwork_url: None,
+                    artists: Vec::new(),
+                    album: None,
+                    duration_ms: None,
+                    available: !device.restricted,
+                    saved: None,
+                    context: None,
+                    restricted: device.restricted,
+                })
+                .collect();
+            page.sections = vec![
+                Section { title: "Local".into(), items: vec![local] },
+                Section { title: "Spotify Connect".into(), items: remote },
+            ];
             page.state = ready_or_empty(&page);
         }
         Route::Settings => {
