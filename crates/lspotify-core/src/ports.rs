@@ -211,8 +211,12 @@ pub enum LocalPlayerCommand {
     Disconnect,
     Play,
     Pause,
+    Previous,
+    Next,
     Seek { position_ms: u64 },
     Volume { value_milli: u16 },
+    Shuffle { enabled: bool },
+    Repeat { mode: u8 },
     Shutdown,
 }
 
