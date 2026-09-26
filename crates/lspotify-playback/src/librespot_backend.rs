@@ -205,7 +205,10 @@ async fn run_async(
                         0 => player.spirc.repeat_track(false).and_then(|()| player.spirc.repeat(false)),
                         1 => player.spirc.repeat_track(false).and_then(|()| player.spirc.repeat(true)),
                         2 => player.spirc.repeat(false).and_then(|()| player.spirc.repeat_track(true)),
-                        _ => Err(librespot_core::Error::invalid_argument("invalid repeat mode")),
+                        _ => {
+                            playback_error(&events, format!("invalid repeat mode {mode}"));
+                            continue;
+                        }
                     };
                     if let Err(error) = result {
                         playback_error(&events, error.to_string());
