@@ -81,12 +81,18 @@ impl PlaybackWebView {
             LocalPlayerCommand::Disconnect => json!({"type": "disconnect"}),
             LocalPlayerCommand::Play => json!({"type": "play"}),
             LocalPlayerCommand::Pause => json!({"type": "pause"}),
+            LocalPlayerCommand::Previous => json!({"type": "previous"}),
+            LocalPlayerCommand::Next => json!({"type": "next"}),
             LocalPlayerCommand::Seek { position_ms } => {
                 json!({"type": "seek", "position_ms": position_ms})
             }
             LocalPlayerCommand::Volume { value_milli } => {
                 json!({"type": "volume", "value_milli": value_milli})
             }
+            LocalPlayerCommand::Shuffle { enabled } => {
+                json!({"type": "shuffle", "enabled": enabled})
+            }
+            LocalPlayerCommand::Repeat { mode } => json!({"type": "repeat", "mode": mode}),
             LocalPlayerCommand::Shutdown => json!({"type": "shutdown"}),
         };
         let id = self.next_command_id.get();
