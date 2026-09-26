@@ -369,9 +369,6 @@ fn send_effects(
                             state.playback.device_name = None;
                         }
 
-                        // Librespot should always register itself when selected. When switching
-                        // away from an already-running local backend, start the replacement too so
-                        // WebView2 can be brought back without another device-picker round trip.
                         // Changing this setting is an explicit request to replace the local
                         // engine, so start the replacement immediately. This lets WebView2 come
                         // back cleanly after a Librespot session instead of remaining lazy/stale.
@@ -400,16 +397,10 @@ fn send_effects(
                     state.playback.observed_at = Some(Instant::now());
                 }
             }
-            Effect::Previous
-                if local_player_selected(state)
-                    && state.local_playback_backend == LocalPlaybackBackendPreference::Librespot =>
-            {
+            Effect::Previous if local_player_selected(state) => {
                 send_local_command(local_player, LocalPlayerCommand::Previous, state);
             }
-            Effect::Next
-                if local_player_selected(state)
-                    && state.local_playback_backend == LocalPlaybackBackendPreference::Librespot =>
-            {
+            Effect::Next if local_player_selected(state) => {
                 send_local_command(local_player, LocalPlayerCommand::Next, state);
             }
             Effect::Seek(delta) if local_player_selected(state) => {
