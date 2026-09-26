@@ -29,6 +29,7 @@ pub enum Effect {
     PlayContext { uri: String, position: usize, device_id: Option<String> },
     Enqueue(String),
     Transfer(String),
+    TransferLocal(String),
     StartLocalPlayback,
     ChangeLocalPlaybackBackend(LocalPlaybackBackendPreference),
     OpenExternal(String),
