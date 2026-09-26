@@ -22,3 +22,6 @@ workspace = true
 
 [build-dependencies]
 vergen.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+librespot-playback = { workspace = true, features = ["pulseaudio-backend"] }
