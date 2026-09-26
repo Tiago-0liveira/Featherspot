@@ -1513,8 +1513,14 @@ pub fn playback_settings_sections(state: &AppState) -> Vec<Section> {
     } else {
         "Librespot is the only local playback engine available on this platform.".into()
     };
-    backend.metadata =
-        "Local playback starts only when you choose This computer from Devices.".into();
+    backend.metadata = match state.local_playback_backend {
+        LocalPlaybackBackendPreference::Librespot => {
+            "Librespot registers at startup; choose This computer to transfer playback.".into()
+        }
+        LocalPlaybackBackendPreference::SpotifyWeb => {
+            "Web Playback starts when selected, or immediately after switching to this backend.".into()
+        }
+    };
     vec![Section { title: "Local playback".into(), items: vec![backend] }]
 }
 
