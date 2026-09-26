@@ -197,7 +197,8 @@ impl BackgroundLocalPlayer {
         let backend = self.backend()?;
         let player = match backend {
             LocalPlaybackBackendPreference::Librespot => {
-                ActiveBackend::Librespot(LibrespotLocalPlayer::start()?)
+                let credentials_dir = crate::AppPaths::discover()?.cache.join("librespot");
+                ActiveBackend::Librespot(LibrespotLocalPlayer::start(credentials_dir)?)
             }
             LocalPlaybackBackendPreference::SpotifyWeb => {
                 #[cfg(target_os = "windows")]
