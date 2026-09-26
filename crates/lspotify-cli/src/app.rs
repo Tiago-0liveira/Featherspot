@@ -658,7 +658,7 @@ fn handle_local_player_events(
                     text: format!("{} is ready on this computer.", state.local_playback_backend.label()),
                 });
                 if transfer_to_local {
-                    worker.send(Effect::Transfer(device_id))?;
+                    worker.send(Effect::TransferLocal(device_id))?;
                 }
                 worker.send(Effect::RefreshPlayback)?;
             }
@@ -1088,7 +1088,7 @@ fn request_next_page_if_needed(worker: &ServiceHandle, state: &mut AppState) -> 
 fn command_success(effect: &Effect) -> String {
     match effect {
         Effect::Enqueue(_) => "Added to queue.".into(),
-        Effect::Transfer(_) => "Playback device selected.".into(),
+        Effect::Transfer(_) | Effect::TransferLocal(_) => "Playback device selected.".into(),
         Effect::PlayTrack { .. } | Effect::PlayContext { .. } => "Playback started.".into(),
         Effect::SetSaved { saved: true, .. } => "♥ Added to Liked Songs".into(),
         Effect::SetSaved { saved: false, .. } => "♡ Removed from Liked Songs".into(),
