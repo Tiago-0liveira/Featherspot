@@ -218,6 +218,11 @@ fn run() -> Result<()> {
             ),
         });
     }
+    if local_playback_backend == LocalPlaybackBackendPreference::Librespot {
+        state.notice =
+            Some(Notice { kind: NoticeKind::Pending, text: "Starting Librespot…".into() });
+        send_local_command(&local_player, LocalPlayerCommand::Connect, &mut state);
+    }
     let mut hits = HitMap::default();
     send_effects(
         &worker,
@@ -355,21 +360,38 @@ fn send_effects(
             }
             Effect::ChangeLocalPlaybackBackend(backend) => {
                 let was_local = local_player_selected(state);
+                let was_ready = local_player.is_ready().unwrap_or(false);
                 match local_player.set_backend(backend) {
                     Ok(()) => {
                         state.local_device_id = None;
-                        state.local_start_requested = false;
                         if was_local {
                             state.selected_device_id = None;
                             state.playback.device_id = None;
+                            state.playback.device_name = None;
                         }
-                        state.notice = Some(Notice {
-                            kind: NoticeKind::Info,
-                            text: format!(
-                                "{} selected. Choose This computer from Devices to start it.",
-                                backend.label()
-                            ),
-                        });
+
+                        // Librespot should always register itself when selected. When switching
+                        // away from an already-running local backend, start the replacement too so
+                        // WebView2 can be brought back without another device-picker round trip.
+                        let should_start = backend == LocalPlaybackBackendPreference::Librespot
+                            || was_local
+                            || was_ready;
+                        state.local_start_requested = was_local;
+                        if should_start {
+                            state.notice = Some(Notice {
+                                kind: NoticeKind::Pending,
+                                text: format!("Starting {}…", backend.label()),
+                            });
+                            send_local_command(local_player, LocalPlayerCommand::Connect, state);
+                        } else {
+                            state.notice = Some(Notice {
+                                kind: NoticeKind::Info,
+                                text: format!(
+                                    "{} selected. Choose This computer from Devices to start it.",
+                                    backend.label()
+                                ),
+                            });
+                        }
                     }
                     Err(error) => {
                         state.notice = Some(Notice {
@@ -381,18 +403,38 @@ fn send_effects(
             }
             Effect::SaveSettings => {}
             Effect::TogglePlayback if local_player_selected(state) => {
-                let command = if state.playback.playing {
-                    LocalPlayerCommand::Pause
-                } else {
-                    LocalPlayerCommand::Play
-                };
-                send_local_command(local_player, command, state);
+                let was_playing = state.playback.playing;
+                let command =
+                    if was_playing { LocalPlayerCommand::Pause } else { LocalPlayerCommand::Play };
+                if send_local_command(local_player, command, state) {
+                    state.playback.playing = !was_playing;
+                    state.playback.observed_at = Some(Instant::now());
+                }
+            }
+            Effect::Previous
+                if local_player_selected(state)
+                    && state.local_playback_backend == LocalPlaybackBackendPreference::Librespot =>
+            {
+                send_local_command(local_player, LocalPlayerCommand::Previous, state);
+            }
+            Effect::Next
+                if local_player_selected(state)
+                    && state.local_playback_backend == LocalPlaybackBackendPreference::Librespot =>
+            {
+                send_local_command(local_player, LocalPlayerCommand::Next, state);
             }
             Effect::Seek(delta) if local_player_selected(state) => {
                 let current =
                     i64::try_from(state.playback.progress_at(Instant::now())).unwrap_or(i64::MAX);
                 let position_ms = current.saturating_add(delta).max(0).cast_unsigned();
-                send_local_command(local_player, LocalPlayerCommand::Seek { position_ms }, state);
+                if send_local_command(
+                    local_player,
+                    LocalPlayerCommand::Seek { position_ms },
+                    state,
+                ) {
+                    state.playback.progress_ms = position_ms.min(state.playback.duration_ms);
+                    state.playback.observed_at = Some(Instant::now());
+                }
             }
             Effect::Volume(value) if local_player_selected(state) => {
                 send_local_command(
@@ -400,6 +442,22 @@ fn send_effects(
                     LocalPlayerCommand::Volume { value_milli: u16::from(value) * 10 },
                     state,
                 );
+            }
+            Effect::Shuffle(enabled)
+                if local_player_selected(state)
+                    && state.local_playback_backend == LocalPlaybackBackendPreference::Librespot =>
+            {
+                send_local_command(
+                    local_player,
+                    LocalPlayerCommand::Shuffle { enabled },
+                    state,
+                );
+            }
+            Effect::Repeat(mode)
+                if local_player_selected(state)
+                    && state.local_playback_backend == LocalPlaybackBackendPreference::Librespot =>
+            {
+                send_local_command(local_player, LocalPlayerCommand::Repeat { mode }, state);
             }
             effect => {
                 if let Err(error) = worker.send(effect) {
@@ -1054,12 +1112,16 @@ fn send_local_command(
     local_player: &BackgroundLocalPlayer,
     command: LocalPlayerCommand,
     state: &mut AppState,
-) {
-    if let Err(error) = local_player.send(command) {
-        state.notice = Some(Notice {
-            kind: NoticeKind::Error,
-            text: format!("Local playback command failed: {error}"),
-        });
+) -> bool {
+    match local_player.send(command) {
+        Ok(()) => true,
+        Err(error) => {
+            state.notice = Some(Notice {
+                kind: NoticeKind::Error,
+                text: format!("Local playback command failed: {error}"),
+            });
+            false
+        }
     }
 }
 
