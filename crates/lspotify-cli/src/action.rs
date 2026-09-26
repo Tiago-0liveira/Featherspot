@@ -893,16 +893,14 @@ fn activate(state: &mut AppState) -> Vec<Effect> {
         }),
         EntityKind::Device => {
             if item.id == LOCAL_DEVICE_PLACEHOLDER {
+                // Keep the currently reported Spotify device/playback state intact while the
+                // local backend starts. Claiming "This computer" before Ready races with the
+                // regular playback poller and makes the status/player UI flicker between devices.
                 state.local_start_requested = true;
-                state.device_selected_by_user = true;
-                state.playback.device_name = Some("This computer".into());
                 state.overlay = None;
                 state.notice = Some(Notice {
                     kind: NoticeKind::Pending,
-                    text: format!(
-                        "Starting {}…",
-                        state.local_playback_backend.label()
-                    ),
+                    text: format!("Starting {}…", state.local_playback_backend.label()),
                 });
                 vec![Effect::StartLocalPlayback]
             } else if item.restricted {
