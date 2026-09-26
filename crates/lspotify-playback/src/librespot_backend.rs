@@ -132,6 +132,7 @@ async fn run_async(
                             active = Some(player);
                         }
                         Err(error) => {
+                            let _ = events.try_send(LocalPlayerEvent::Unavailable);
                             playback_error(&events, error);
                         }
                     }
