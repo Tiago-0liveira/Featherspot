@@ -507,7 +507,7 @@ fn load_page(
                 id: crate::action::LOCAL_DEVICE_PLACEHOLDER.into(),
                 kind: EntityKind::Device,
                 title: "This computer".into(),
-                subtitle: "Local playback · starts only when selected".into(),
+                subtitle: "Local playback on this computer".into(),
                 metadata: "Uses the local playback engine configured in Settings.".into(),
                 uri: Some(crate::action::LOCAL_DEVICE_PLACEHOLDER.into()),
                 external_url: None,
