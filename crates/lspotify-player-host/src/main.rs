@@ -31,8 +31,12 @@ mod windows {
         Disconnect,
         Play,
         Pause,
+        Previous,
+        Next,
         Seek { position_ms: u64 },
         Volume { value_milli: u16 },
+        Shuffle { enabled: bool },
+        Repeat { mode: u8 },
         Shutdown,
     }
 
@@ -44,8 +48,12 @@ mod windows {
                 Command::Disconnect => Self::Disconnect,
                 Command::Play => Self::Play,
                 Command::Pause => Self::Pause,
+                Command::Previous => Self::Previous,
+                Command::Next => Self::Next,
                 Command::Seek { position_ms } => Self::Seek { position_ms },
                 Command::Volume { value_milli } => Self::Volume { value_milli },
+                Command::Shuffle { enabled } => Self::Shuffle { enabled },
+                Command::Repeat { mode } => Self::Repeat { mode },
                 Command::Shutdown => Self::Shutdown,
             }
         }
