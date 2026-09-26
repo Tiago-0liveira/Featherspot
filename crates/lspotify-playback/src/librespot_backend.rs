@@ -321,8 +321,12 @@ fn shutdown_active(active: Option<ActivePlayer>) {
 fn preferred_audio_backend() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
+        let pulse_socket_available = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .is_some_and(|runtime| runtime.join("pulse").join("native").exists());
         if std::env::var_os("PULSE_SERVER").is_some()
             || std::env::var_os("WSL_DISTRO_NAME").is_some()
+            || pulse_socket_available
         {
             return Some("pulseaudio".into());
         }
