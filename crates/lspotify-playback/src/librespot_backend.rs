@@ -1,4 +1,5 @@
 use std::{
+    path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -8,8 +9,10 @@ use librespot_connect::{ConnectConfig, Spirc};
 use librespot_core::{
     Session, SessionConfig,
     authentication::Credentials,
+    cache::Cache,
     config::DeviceType,
 };
+use librespot_oauth::OAuthClientBuilder;
 use librespot_playback::{
     audio_backend,
     config::{AudioFormat, PlayerConfig},
@@ -35,12 +38,12 @@ impl LibrespotLocalPlayer {
     /// # Errors
     ///
     /// Returns an error when the worker thread cannot be created.
-    pub fn start() -> Result<Self> {
+    pub fn start(credentials_dir: PathBuf) -> Result<Self> {
         let (commands, command_receiver) = mpsc::sync_channel(64);
         let (event_sender, events) = mpsc::sync_channel(64);
         let thread = thread::Builder::new()
             .name("lspotify-librespot".into())
-            .spawn(move || run(command_receiver, event_sender))
+            .spawn(move || run(command_receiver, event_sender, credentials_dir))
             .map_err(|error| AppError::new(ErrorKind::Unavailable, error.to_string()))?;
         Ok(Self { commands, events: Mutex::new(events), thread: Mutex::new(Some(thread)) })
     }
@@ -93,6 +96,7 @@ struct ActivePlayer {
 fn run(
     commands: mpsc::Receiver<LocalPlayerCommand>,
     events: mpsc::SyncSender<LocalPlayerEvent>,
+    credentials_dir: PathBuf,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(runtime) => runtime,
@@ -102,28 +106,26 @@ fn run(
             return;
         }
     };
-    runtime.block_on(run_async(commands, events));
+    runtime.block_on(run_async(commands, events, credentials_dir));
 }
 
 async fn run_async(
     commands: mpsc::Receiver<LocalPlayerCommand>,
     events: mpsc::SyncSender<LocalPlayerEvent>,
+    credentials_dir: PathBuf,
 ) {
-    let mut access_token: Option<String> = None;
     let mut active: Option<ActivePlayer> = None;
 
     loop {
         match commands.try_recv() {
-            Ok(LocalPlayerCommand::TokenUpdate { access_token: token }) => {
-                access_token = Some(token);
-            }
+            Ok(LocalPlayerCommand::TokenUpdate { .. }) => {}
             Ok(LocalPlayerCommand::Connect) => {
                 if let Some(player) = active.as_ref() {
                     if let Err(error) = player.spirc.activate() {
                         playback_error(&events, error.to_string());
                     }
-                } else if let Some(token) = access_token.as_deref() {
-                    match connect(token).await {
+                } else {
+                    match connect(credentials_dir.clone()).await {
                         Ok(player) => {
                             tracing::info!(
                                 device_id = %player.device_id,
@@ -136,8 +138,6 @@ async fn run_async(
                             playback_error(&events, error);
                         }
                     }
-                } else {
-                    playback_error(&events, "Spotify access token is not available");
                 }
             }
             Ok(LocalPlayerCommand::Disconnect) => {
@@ -217,16 +217,43 @@ async fn run_async(
     }
 }
 
-async fn connect(access_token: &str) -> std::result::Result<ActivePlayer, String> {
+async fn connect(credentials_dir: PathBuf) -> std::result::Result<ActivePlayer, String> {
     const REGISTRATION_GRACE_PERIOD: Duration = Duration::from_secs(3);
+    const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 
     let mut session_config = SessionConfig::default();
     session_config.device_id = random_device_id();
     let device_id = DeviceId::parse(session_config.device_id.clone())
         .map_err(|error| format!("generated device id is invalid: {error}"))?;
 
-    let session = Session::new(session_config, None);
-    let credentials = Credentials::with_access_token(access_token);
+    let cache = Cache::new(Some(credentials_dir.clone()), None, None, None)
+        .map_err(|error| format!("could not open Librespot credential cache: {error}"))?;
+
+    let credentials = if let Some(credentials) = cache.credentials() {
+        tracing::info!(
+            path = %credentials_dir.display(),
+            "using cached Librespot credentials"
+        );
+        credentials
+    } else {
+        tracing::info!(
+            path = %credentials_dir.display(),
+            "no cached Librespot credentials; starting one-time Spotify authorization"
+        );
+        OAuthClientBuilder::new(
+            &session_config.client_id,
+            OAUTH_REDIRECT_URI,
+            vec!["streaming"],
+        )
+        .open_in_browser()
+        .build()
+        .map_err(|error| format!("could not prepare Librespot OAuth: {error}"))?
+        .get_access_token()
+        .map(|token| Credentials::with_access_token(token.access_token))
+        .map_err(|error| format!("Librespot OAuth failed: {error}"))?
+    };
+
+    let session = Session::new(session_config, Some(cache));
 
     tracing::info!(device_id = %device_id, "initializing librespot audio and Spotify session");
 
