@@ -1,7 +1,7 @@
 use std::{
     sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use librespot_connect::{ConnectConfig, Spirc};
@@ -85,6 +85,9 @@ struct ActivePlayer {
     spirc: Spirc,
     _player: Arc<Player>,
     spirc_task: tokio::task::JoinHandle<()>,
+    device_id: DeviceId,
+    ready_at: Instant,
+    ready_emitted: bool,
 }
 
 fn run(
@@ -122,20 +125,14 @@ async fn run_async(
                 } else if let Some(token) = access_token.as_deref() {
                     match connect(token).await {
                         Ok(player) => {
-                            let device_id = player.session.device_id().to_owned();
-                            match DeviceId::parse(device_id) {
-                                Ok(device_id) => {
-                                    let _ = events.try_send(LocalPlayerEvent::Ready { device_id });
-                                    active = Some(player);
-                                }
-                                Err(error) => {
-                                    playback_error(&events, error.to_string());
-                                }
-                            }
+                            tracing::info!(
+                                device_id = %player.device_id,
+                                "librespot session authenticated; waiting for Spotify Connect registration"
+                            );
+                            active = Some(player);
                         }
                         Err(error) => {
                             playback_error(&events, error);
-                            let _ = events.try_send(LocalPlayerEvent::Unavailable);
                         }
                     }
                 } else {
@@ -192,8 +189,27 @@ async fn run_async(
         }
 
         if active.as_ref().is_some_and(|player| player.spirc_task.is_finished()) {
+            let was_ready = active.as_ref().is_some_and(|player| player.ready_emitted);
             shutdown_active(active.take());
             let _ = events.try_send(LocalPlayerEvent::Unavailable);
+            playback_error(
+                &events,
+                if was_ready {
+                    "Spotify Connect session stopped unexpectedly after becoming ready"
+                } else {
+                    "Spotify Connect session stopped during startup before the device became ready"
+                },
+            );
+        } else if let Some(player) = active.as_mut()
+            && !player.ready_emitted
+            && Instant::now() >= player.ready_at
+        {
+            player.ready_emitted = true;
+            tracing::info!(
+                device_id = %player.device_id,
+                "librespot startup grace period completed; reporting local device ready"
+            );
+            let _ = events.try_send(LocalPlayerEvent::Ready { device_id: player.device_id.clone() });
         }
 
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -201,18 +217,25 @@ async fn run_async(
 }
 
 async fn connect(access_token: &str) -> std::result::Result<ActivePlayer, String> {
+    const REGISTRATION_GRACE_PERIOD: Duration = Duration::from_secs(3);
+
     let mut session_config = SessionConfig::default();
     session_config.device_id = random_device_id();
+    let device_id = DeviceId::parse(session_config.device_id.clone())
+        .map_err(|error| format!("generated device id is invalid: {error}"))?;
 
     let session = Session::new(session_config, None);
     let credentials = Credentials::with_access_token(access_token);
 
+    tracing::info!(device_id = %device_id, "initializing librespot audio and Spotify session");
+
     let mixer_builder =
         mixer::find(None).ok_or_else(|| "librespot soft-volume mixer is unavailable".to_string())?;
-    let mixer = mixer_builder(MixerConfig::default()).map_err(|error| error.to_string())?;
+    let mixer = mixer_builder(MixerConfig::default())
+        .map_err(|error| format!("could not initialize librespot mixer: {error}"))?;
 
-    let sink_builder =
-        audio_backend::find(None).ok_or_else(|| "librespot audio backend is unavailable".to_string())?;
+    let sink_builder = audio_backend::find(None)
+        .ok_or_else(|| "librespot audio backend is unavailable".to_string())?;
     let player = Player::new(
         PlayerConfig::default(),
         session.clone(),
@@ -228,10 +251,28 @@ async fn connect(access_token: &str) -> std::result::Result<ActivePlayer, String
     let (spirc, spirc_task) =
         Spirc::new(connect_config, session.clone(), credentials, Arc::clone(&player), mixer)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("Spotify/Librespot authentication or SPIRC setup failed: {error}"))?;
+
+    spirc
+        .activate()
+        .map_err(|error| format!("could not activate the Librespot Connect device: {error}"))?;
+
+    tracing::info!(
+        device_id = %device_id,
+        "librespot SPIRC initialized and activation queued"
+    );
+
     let spirc_task = tokio::spawn(spirc_task);
 
-    Ok(ActivePlayer { session, spirc, _player: player, spirc_task })
+    Ok(ActivePlayer {
+        session,
+        spirc,
+        _player: player,
+        spirc_task,
+        device_id,
+        ready_at: Instant::now() + REGISTRATION_GRACE_PERIOD,
+        ready_emitted: false,
+    })
 }
 
 fn shutdown_active(active: Option<ActivePlayer>) {
