@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 librespot-connect.workspace = true
 librespot-core.workspace = true
+librespot-oauth.workspace = true
 librespot-playback.workspace = true
 lspotify-core = { path = "../lspotify-core" }
 rand.workspace = true
