@@ -262,7 +262,14 @@ async fn connect(credentials_dir: PathBuf) -> std::result::Result<ActivePlayer, 
     let mixer = mixer_builder(MixerConfig::default())
         .map_err(|error| format!("could not initialize librespot mixer: {error}"))?;
 
-    let sink_builder = audio_backend::find(None)
+    let preferred_backend = preferred_audio_backend();
+    if let Some(name) = preferred_backend.as_deref() {
+        tracing::info!(backend = name, "selecting librespot audio backend");
+    }
+    let sink_builder = preferred_backend
+        .clone()
+        .and_then(|name| audio_backend::find(Some(name)))
+        .or_else(|| audio_backend::find(None))
         .ok_or_else(|| "librespot audio backend is unavailable".to_string())?;
     let player = Player::new(
         PlayerConfig::default(),
@@ -309,6 +316,18 @@ fn shutdown_active(active: Option<ActivePlayer>) {
         player.session.shutdown();
         player.spirc_task.abort();
     }
+}
+
+fn preferred_audio_backend() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("PULSE_SERVER").is_some()
+            || std::env::var_os("WSL_DISTRO_NAME").is_some()
+        {
+            return Some("pulseaudio".into());
+        }
+    }
+    None
 }
 
 fn playback_error(events: &mpsc::SyncSender<LocalPlayerEvent>, message: impl Into<String>) {
