@@ -161,6 +161,20 @@ async fn run_async(
                     playback_error(&events, error.to_string());
                 }
             }
+            Ok(LocalPlayerCommand::Previous) => {
+                if let Some(player) = active.as_ref()
+                    && let Err(error) = player.spirc.prev()
+                {
+                    playback_error(&events, error.to_string());
+                }
+            }
+            Ok(LocalPlayerCommand::Next) => {
+                if let Some(player) = active.as_ref()
+                    && let Err(error) = player.spirc.next()
+                {
+                    playback_error(&events, error.to_string());
+                }
+            }
             Ok(LocalPlayerCommand::Seek { position_ms }) => {
                 if let Some(player) = active.as_ref() {
                     let position = u32::try_from(position_ms).unwrap_or(u32::MAX);
@@ -174,6 +188,26 @@ async fn run_async(
                     let value = u32::from(value_milli.min(1000));
                     let volume = ((value * u32::from(u16::MAX)) / 1000) as u16;
                     if let Err(error) = player.spirc.set_volume(volume) {
+                        playback_error(&events, error.to_string());
+                    }
+                }
+            }
+            Ok(LocalPlayerCommand::Shuffle { enabled }) => {
+                if let Some(player) = active.as_ref()
+                    && let Err(error) = player.spirc.shuffle(enabled)
+                {
+                    playback_error(&events, error.to_string());
+                }
+            }
+            Ok(LocalPlayerCommand::Repeat { mode }) => {
+                if let Some(player) = active.as_ref() {
+                    let result = match mode {
+                        0 => player.spirc.repeat_track(false).and_then(|()| player.spirc.repeat(false)),
+                        1 => player.spirc.repeat_track(false).and_then(|()| player.spirc.repeat(true)),
+                        2 => player.spirc.repeat(false).and_then(|()| player.spirc.repeat_track(true)),
+                        _ => Err(librespot_core::Error::invalid_argument("invalid repeat mode")),
+                    };
+                    if let Err(error) = result {
                         playback_error(&events, error.to_string());
                     }
                 }
