@@ -321,6 +321,10 @@ fn perform(api: &SpotifyWebApi, token: &str, effect: Effect) -> ServiceResponse 
         Effect::Transfer(id) => {
             ServiceResponse::Command { effect, result: api.transfer(token, &id) }
         }
+        Effect::TransferLocal(id) => {
+            let result = transfer_local_when_registered(api, token, &id);
+            ServiceResponse::Command { effect, result }
+        }
         Effect::SetSaved { uri, saved } => {
             let result = if saved {
                 api.save_library_items(token, &[&uri])
@@ -825,6 +829,42 @@ fn play_context_with_retry(
         }
     }
     initial
+}
+
+fn transfer_local_when_registered(
+    api: &SpotifyWebApi,
+    token: &str,
+    device_id: &str,
+) -> Result<()> {
+    const ATTEMPTS: usize = 24;
+    const DELAY: Duration = Duration::from_millis(250);
+
+    let mut last_error = None;
+    for attempt in 0..ATTEMPTS {
+        match api.devices(token) {
+            Ok(devices) => {
+                if devices.iter().any(|device| device.id == device_id && !device.restricted) {
+                    match api.transfer(token, device_id) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => last_error = Some(error),
+                    }
+                }
+            }
+            Err(error) if error.kind != ErrorKind::Unavailable => return Err(error),
+            Err(error) => last_error = Some(error),
+        }
+
+        if attempt + 1 < ATTEMPTS {
+            thread::sleep(DELAY);
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        AppError::new(
+            ErrorKind::Unavailable,
+            "local Librespot device did not register with Spotify Connect within 6 seconds",
+        )
+    }))
 }
 
 fn resolve_fallback_device(api: &SpotifyWebApi, token: &str) -> Option<String> {
