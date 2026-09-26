@@ -139,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
+          sudo apt-get install -y libasound2-dev libpulse-dev pkg-config
           cargo build --locked --release -p lspotify-cli --bin lspotify
           mkdir -p dist
           cp target/release/lspotify dist/lspotify-linux-x86_64
