@@ -134,6 +134,12 @@
         case "pause":
           await requirePlayer().pause();
           break;
+        case "previous":
+          await requirePlayer().previousTrack();
+          break;
+        case "next":
+          await requirePlayer().nextTrack();
+          break;
         case "seek":
           await requirePlayer().seek(Math.max(0, Number(payload.position_ms) || 0));
           break;
