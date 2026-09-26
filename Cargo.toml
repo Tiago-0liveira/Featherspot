@@ -26,6 +26,7 @@ gpui = "=0.2.2"
 keyring = { version = "=4.2.0", default-features = false, features = ["v1", "windows-native-keyring-store"] }
 librespot-connect = { version = "=0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-core = { version = "=0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-oauth = { version = "=0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-playback = { version = "=0.8.0", default-features = false, features = ["rodio-backend", "rustls-tls-native-roots"] }
 open = "=5.4.4"
 rand = "=0.9.2"
