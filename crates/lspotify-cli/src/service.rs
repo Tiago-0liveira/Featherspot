@@ -134,6 +134,7 @@ impl ServiceHandle {
                 | Effect::PlayContext { .. }
                 | Effect::Enqueue(_)
                 | Effect::Transfer(_)
+                | Effect::TransferLocal(_)
                 | Effect::RefreshPlayback
                 | Effect::RefreshQueue
                 | Effect::SetSaved { .. }
