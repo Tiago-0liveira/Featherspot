@@ -360,7 +360,6 @@ fn send_effects(
             }
             Effect::ChangeLocalPlaybackBackend(backend) => {
                 let was_local = local_player_selected(state);
-                let was_ready = local_player.is_ready().unwrap_or(false);
                 match local_player.set_backend(backend) {
                     Ok(()) => {
                         state.local_device_id = None;
@@ -373,25 +372,15 @@ fn send_effects(
                         // Librespot should always register itself when selected. When switching
                         // away from an already-running local backend, start the replacement too so
                         // WebView2 can be brought back without another device-picker round trip.
-                        let should_start = backend == LocalPlaybackBackendPreference::Librespot
-                            || was_local
-                            || was_ready;
+                        // Changing this setting is an explicit request to replace the local
+                        // engine, so start the replacement immediately. This lets WebView2 come
+                        // back cleanly after a Librespot session instead of remaining lazy/stale.
                         state.local_start_requested = was_local;
-                        if should_start {
-                            state.notice = Some(Notice {
-                                kind: NoticeKind::Pending,
-                                text: format!("Starting {}…", backend.label()),
-                            });
-                            send_local_command(local_player, LocalPlayerCommand::Connect, state);
-                        } else {
-                            state.notice = Some(Notice {
-                                kind: NoticeKind::Info,
-                                text: format!(
-                                    "{} selected. Choose This computer from Devices to start it.",
-                                    backend.label()
-                                ),
-                            });
-                        }
+                        state.notice = Some(Notice {
+                            kind: NoticeKind::Pending,
+                            text: format!("Starting {}…", backend.label()),
+                        });
+                        send_local_command(local_player, LocalPlayerCommand::Connect, state);
                     }
                     Err(error) => {
                         state.notice = Some(Notice {
